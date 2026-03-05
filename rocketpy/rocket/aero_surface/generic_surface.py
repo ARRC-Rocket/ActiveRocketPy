@@ -292,14 +292,14 @@ class GenericSurface:
         rotation_matrix = Matrix(
             [
                 [1, 0, 0],
-                [0, math.cos(alpha), -math.sin(alpha)],
-                [0, math.sin(alpha), math.cos(alpha)],
+                [0, math.cos(alpha), math.sin(alpha)],
+                [0, -math.sin(alpha), math.cos(alpha)],
             ]
         ) @ Matrix(
             [
-                [math.cos(beta), 0, -math.sin(beta)],
+                [math.cos(beta), 0, math.sin(beta)],
                 [0, 1, 0],
-                [math.sin(beta), 0, math.cos(beta)],
+                [-math.sin(beta), 0, math.cos(beta)],
             ]
         )
         R1, R2, R3 = rotation_matrix @ Vector([side, -lift, -drag])
