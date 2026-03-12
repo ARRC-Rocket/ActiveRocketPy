@@ -13,7 +13,8 @@ class LinearGenericSurface(GenericSurface):
         self,
         reference_area,
         reference_length,
-        coefficients,
+        coefficient_constants=None,
+        coefficients=None,
         center_of_pressure=(0, 0, 0),
         name="Generic Linear Surface",
     ):
@@ -41,6 +42,13 @@ class LinearGenericSurface(GenericSurface):
         reference_length : int, float
             Reference length of the aerodynamic surface. Has the unit of meters.
             Commonly defined as the rocket's diameter.
+        coefficient_constants: list, optional
+            List of constants to be populated to the coefficients. This
+            list will overwrite the coefficients dict if not None. The order is
+            as follows: [cL_0, cL_alpha, cL_beta, cL_p, cL_q, cL_r, cQ_0, cQ_alpha,
+            cQ_beta, cQ_p, cQ_q, cQ_r, cD_0, cD_alpha, cD_beta, cD_p, cD_q, cD_r,
+            cm_0, cm_alpha, cm_beta, cm_p, cm_q, cm_r, cn_0, cn_alpha, cn_beta,
+            cn_p, cn_q, cn_r, cl_0, cl_alpha, cl_beta, cl_p, cl_q, cl_r].
         coefficients: dict, optional
             List of coefficients. If a coefficient is omitted, it is set to 0.
             The valid coefficients are:\n
@@ -157,6 +165,36 @@ class LinearGenericSurface(GenericSurface):
         name : str
             Name of the aerodynamic surface. Default is 'GenericSurface'.
         """
+        self.coefficient_constants = coefficient_constants
+        # Populate the coefficients from the list of constants if they are not defined
+        if coefficients is None:
+            coefficients = self._get_default_coefficients()
+        if coefficient_constants is not None:
+            # helper to build a 7‑input callable returning a fixed value
+            def _constant_factory(value):
+                def _constant(
+                    alpha, beta, mach, reynolds, pitch_rate, yaw_rate, roll_rate
+                ):
+                    """Return the captured constant regardless of inputs."""
+                    return value
+
+                return _constant
+
+            for i, key in enumerate(self._get_default_coefficients().keys()):
+                const = coefficient_constants[i]
+                coefficients[key] = Function(
+                    _constant_factory(const),
+                    inputs=[
+                        "alpha",
+                        "beta",
+                        "mach",
+                        "reynolds",
+                        "pitch_rate",
+                        "yaw_rate",
+                        "roll_rate",
+                    ],
+                    outputs=[key],
+                )
 
         super().__init__(
             reference_area=reference_area,
