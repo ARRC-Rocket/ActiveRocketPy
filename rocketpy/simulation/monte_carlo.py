@@ -231,6 +231,8 @@ class MonteCarlo:
             self.__run_in_serial()
 
         self.__terminate_simulation()
+        
+        return self.results
 
     def __setup_files(self, append):
         """
