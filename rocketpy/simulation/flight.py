@@ -600,6 +600,7 @@ class Flight:
         self.name = name
         self.equations_of_motion = equations_of_motion
         self.ode_solver = ode_solver
+        self.verbose = verbose
 
         # Controller initialization
         self.__init_controllers()
@@ -616,9 +617,25 @@ class Flight:
         )
         self.flight_phases.add_phase(self.max_time)
 
-        # Simulate flight
-        self.__simulate(verbose)
+    def simulate(self):
+        """Call __simulate to simulate the flight trajectory.
 
+        Returns
+        -------
+        None
+        """
+        self.__simulate(self.verbose)
+
+    def initalize_prints_plots(self):
+        """Initialize prints and plots objects.
+
+        This should be called after simulating the flight to print and plot
+        all simulation results.
+
+        Returns
+        -------
+        None
+        """
         # Initialize prints and plots objects
         self.prints = _FlightPrints(self)
         self.plots = _FlightPlots(self)
