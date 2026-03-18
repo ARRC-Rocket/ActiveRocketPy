@@ -15,10 +15,10 @@ class TVC():
     ----------
     TVC.gimbal_angle_x : float
         Current gimbal angle around the x-axis (pitch), in degrees.
-        Positive values deflect the thrust vector in the positive y direction.
+        Positive values provides positive M1 (pitch moment).
     TVC.gimbal_angle_y : float
         Current gimbal angle around the y-axis (yaw), in degrees.
-        Positive values deflect the thrust vector in the positive x direction.
+        Positive values provides positive M2 (yaw moment).
     TVC.gimbal_range : float
         Maximum gimbal angle magnitude in degrees. Both x and y gimbal angles
         are clamped to this value if clamp is True.
