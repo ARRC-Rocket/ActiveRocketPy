@@ -245,7 +245,7 @@ class Rocket:
             can also be called as "rocket dry inertia tensor".
         volume : int, float
             Rocket's total volume in m³. This can be used for buoyancy calculations.
-            It can also be set to 0 if buoyancy is not being considered. 
+            It can also be set to 0 if buoyancy is not being considered.
             Use None to let the program calculate the volume based on the added components.
         power_off_drag : int, float, callable, string, array
             Rocket's drag coefficient when the motor is off. Can be given as an
@@ -388,7 +388,6 @@ class Rocket:
         else:
             # Volume and buoyancy properties
             self.volume = volume
-        
 
         # Evaluate stability (even though no aerodynamic surfaces are present yet)
         self.evaluate_center_of_pressure()
@@ -692,7 +691,7 @@ class Rocket:
         """
         # TODO: calculate volume from radius and surface locations
         self.volume = 0
-        
+
         return self.volume
 
     def evaluate_dry_inertias(self):

@@ -1721,7 +1721,7 @@ class Flight:
         ]
         ax, ay, az = K @ Vector(L)
         az -= self.env.gravity.get_value_opt(z)  # Include gravity
-        
+
         # Include buoyancy force: F_buoyancy = rho * V * g (upward)
         buoyancy_force = rho * self.rocket.volume * self.env.gravity.get_value_opt(z)
         az += buoyancy_force / total_mass_at_t  # Add buoyancy acceleration
@@ -1928,8 +1928,7 @@ class Flight:
         # Calculate weight with buoyancy: F_net = -total_mass * g + rho * V * g
         gravity_accel = self.env.gravity.get_value_opt(z)
         net_gravitational_force = (
-            -total_mass * gravity_accel 
-            + rho * self.rocket.volume * gravity_accel
+            -total_mass * gravity_accel + rho * self.rocket.volume * gravity_accel
         )
         weight_in_body_frame = Kt @ Vector([0, 0, net_gravitational_force])
 
@@ -2051,10 +2050,10 @@ class Flight:
         Dx = pseudo_drag * freestream_x  # add eta efficiency for wake
         Dy = pseudo_drag * freestream_y
         Dz = pseudo_drag * freestream_z
-        
+
         # Calculate buoyancy force during parachute phase
         buoyancy_force = rho * self.rocket.volume * self.env.gravity.get_value_opt(z)
-        
+
         ax = Dx / (mp + ma)
         ay = Dy / (mp + ma)
         az = (Dz - mp * self.env.gravity.get_value_opt(z) + buoyancy_force) / (mp + ma)

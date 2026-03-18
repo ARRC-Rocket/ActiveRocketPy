@@ -33,7 +33,7 @@ class StochasticFlight(StochasticModel):
         If False, the simulation will run at the time step defined by the controller
         sampling rate. Be aware that this will make the simulation run much slower.
     max_time : int, float
-        The maximum time of the flight simulation. If the flight simulation 
+        The maximum time of the flight simulation. If the flight simulation
         reaches this time, it will terminate. This attribute can not be randomized.
     min_time_step : int, float
         The minimum time step of the flight simulation. This attribute can not be randomized.
