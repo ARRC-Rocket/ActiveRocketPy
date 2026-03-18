@@ -321,8 +321,8 @@ class Flight:
         Aerodynamic moment acting along the y-axis of the rocket's body
         frame as a function of time. Expressed in Newtons (N).
     Flight.M3 : Function
-        Aerodynamic moment acting along the z-axis of the rocket's body
-        frame as a function of time. Expressed in Newtons (N).
+        Aerodynamic moment and roll control moment acting along the z-axis of
+        the rocket's body frame as a function of time. Expressed in Newtons (N).
     Flight.net_thrust : Function
         Rocket's engine net thrust as a function of time in Newton.
         This is the actual thrust force experienced by the rocket.
@@ -600,6 +600,7 @@ class Flight:
         self.name = name
         self.equations_of_motion = equations_of_motion
         self.ode_solver = ode_solver
+        self.verbose = verbose
 
         # Controller initialization
         self.__init_controllers()
@@ -616,9 +617,25 @@ class Flight:
         )
         self.flight_phases.add_phase(self.max_time)
 
-        # Simulate flight
-        self.__simulate(verbose)
+    def simulate(self):
+        """Call __simulate to simulate the flight trajectory.
 
+        Returns
+        -------
+        None
+        """
+        self.__simulate(self.verbose)
+
+    def initalize_prints_plots(self):
+        """Initialize prints and plots objects.
+
+        This should be called after simulating the flight to print and plot
+        all simulation results.
+
+        Returns
+        -------
+        None
+        """
         # Initialize prints and plots objects
         self.prints = _FlightPrints(self)
         self.plots = _FlightPlots(self)
@@ -1252,10 +1269,13 @@ class Flight:
                     "time_overshoot has been set to False due to the presence "
                     "of controllers or sensors. "
                 )
-            # reset controllable object to initial state (only airbrakes for now)
+            # reset controllable objects to initial state (air brakes, TVC, and roll control)
             for air_brakes in self.rocket.air_brakes:
                 air_brakes._reset()
-
+            if hasattr(self.rocket, "tvc"):
+                self.rocket.tvc._reset()
+            if hasattr(self.rocket, "roll_control"):
+                self.rocket.roll_control._reset()
         self.sensor_data = {}
         for sensor in self.sensors:
             sensor._reset(self.rocket)  # resets noise and measurement list
@@ -1498,9 +1518,33 @@ class Flight:
                 + self.rocket.motor.pressure_thrust(pressure),
                 0,
             )
+
+            # TVC (Thrust Vector Control)
+            if hasattr(self.rocket, "tvc"):
+                # TVC Fz thrust: F = T * sqrt(1 - sin(gimbal_angle_x)**2 - sin(gimbal_angle_y)**2)
+                thrust3 = net_thrust * np.sqrt(
+                    1
+                    - np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180)) ** 2
+                    - np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180)) ** 2
+                )
+                tvc_lever = self.rocket.nozzle_to_cdm
+                # TVC Mx My moments: M = T * sin(x) * r
+                M1 += (
+                    np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180))
+                    * net_thrust
+                    * tvc_lever
+                )
+                M2 += (
+                    np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180))
+                    * net_thrust
+                    * tvc_lever
+                )
+            else:
+                thrust3 = net_thrust
             # Off center moment
-            M1 += self.rocket.thrust_eccentricity_y * net_thrust
-            M2 -= self.rocket.thrust_eccentricity_x * net_thrust
+            M1 += self.rocket.thrust_eccentricity_y * thrust3
+            M2 -= self.rocket.thrust_eccentricity_x * thrust3
+
         else:
             # Motor stopped
             # Inertias
@@ -1513,7 +1557,7 @@ class Flight:
             # Mass
             mass_flow_rate_at_t, propellant_mass_at_t = 0, 0
             # thrust
-            net_thrust = 0
+            thrust3 = 0
 
         # Retrieve important quantities
         # Inertias
@@ -1636,6 +1680,10 @@ class Flight:
         # Off center moment
         M3 += self.rocket.cp_eccentricity_x * R2 - self.rocket.cp_eccentricity_y * R1
 
+        # Roll control moment
+        if hasattr(self.rocket, "roll_control"):
+            M3 += self.rocket.roll_control.roll_torque
+
         # Calculate derivatives
         # Angular acceleration
         alpha1 = (
@@ -1716,11 +1764,15 @@ class Flight:
                 + 2 * c * mass_flow_rate_at_t * omega1
             )
             / total_mass_at_t,
-            (R3 - b * propellant_mass_at_t * (alpha2 - omega1 * omega3) + net_thrust)
+            (R3 - b * propellant_mass_at_t * (alpha2 - omega1 * omega3) + thrust3)
             / total_mass_at_t,
         ]
         ax, ay, az = K @ Vector(L)
         az -= self.env.gravity.get_value_opt(z)  # Include gravity
+
+        # Include buoyancy force: F_buoyancy = rho * V * g (upward)
+        buoyancy_force = rho * self.rocket.volume * self.env.gravity.get_value_opt(z)
+        az += buoyancy_force / total_mass_at_t  # Add buoyancy acceleration
 
         # Coriolis acceleration
         _, w_earth_y, w_earth_z = self.env.earth_rotation_vector
@@ -1910,25 +1962,56 @@ class Flight:
             M2 += N
             M3 += L
 
+        # TVC (Thrust Vector Control)
+        if hasattr(self.rocket, "tvc"):
+            tvc_lever = self.rocket.nozzle_to_cdm
+            # TVC Mx My moments: M = T * sin(x) * r
+            M1 += (
+                np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180))
+                * net_thrust
+                * tvc_lever
+            )
+            M2 += (
+                np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180))
+                * net_thrust
+                * tvc_lever
+            )
+            # TVC Fz thrust: F = T * sqrt(1 - sin^2(x) - sin^2(y))
+            thrust3 = net_thrust * (
+                np.sqrt(
+                    1
+                    - np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180)) ** 2
+                    - np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180)) ** 2
+                )
+            )
+        else:
+            thrust3 = net_thrust
         # Off center moment
         M1 += (
             self.rocket.cp_eccentricity_y * R3
-            + self.rocket.thrust_eccentricity_y * net_thrust
+            + self.rocket.thrust_eccentricity_y * thrust3
         )
         M2 -= (
             self.rocket.cp_eccentricity_x * R3
-            + self.rocket.thrust_eccentricity_x * net_thrust
+            + self.rocket.thrust_eccentricity_x * thrust3
         )
         M3 += self.rocket.cp_eccentricity_x * R2 - self.rocket.cp_eccentricity_y * R1
 
-        weight_in_body_frame = Kt @ Vector(
-            [0, 0, -total_mass * self.env.gravity.get_value_opt(z)]
+        # Roll control moment
+        if hasattr(self.rocket, "roll_control"):
+            M3 += self.rocket.roll_control.roll_torque
+
+        # Calculate weight with buoyancy: F_net = -total_mass * g + rho * V * g
+        gravity_accel = self.env.gravity.get_value_opt(z)
+        net_gravitational_force = (
+            -total_mass * gravity_accel + rho * self.rocket.volume * gravity_accel
         )
+        weight_in_body_frame = Kt @ Vector([0, 0, net_gravitational_force])
 
         T00 = total_mass * r_CM
         T03 = 2 * total_mass_dot * (r_NOZ - r_CM) - 2 * total_mass * r_CM_dot
         T04 = (
-            Vector([0, 0, net_thrust])
+            Vector([0, 0, thrust3])
             - total_mass * r_CM_ddot
             - 2 * total_mass_dot * r_CM_dot
             + total_mass_ddot * (r_NOZ - r_CM)
@@ -2043,9 +2126,13 @@ class Flight:
         Dx = pseudo_drag * freestream_x  # add eta efficiency for wake
         Dy = pseudo_drag * freestream_y
         Dz = pseudo_drag * freestream_z
+
+        # Calculate buoyancy force during parachute phase
+        buoyancy_force = rho * self.rocket.volume * self.env.gravity.get_value_opt(z)
+
         ax = Dx / (mp + ma)
         ay = Dy / (mp + ma)
-        az = (Dz - mp * self.env.gravity.get_value_opt(z)) / (mp + ma)
+        az = (Dz - mp * self.env.gravity.get_value_opt(z) + buoyancy_force) / (mp + ma)
 
         # Add coriolis acceleration
         _, w_earth_y, w_earth_z = self.env.earth_rotation_vector
@@ -2277,8 +2364,8 @@ class Flight:
 
     @funcify_method("Time (s)", "M3 (Nm)", "linear", "zero")
     def M3(self):
-        """Aerodynamic moment acting along the z-axis of the rocket's body
-        frame as a function of time. Expressed in Newtons (N)."""
+        """Aerodynamic moment and roll control moment acting along the z-axis
+        of the rocket's body frame as a function of time. Expressed in Newtons (N)."""
         return self.__evaluate_post_process[:, [0, 12]]
 
     @funcify_method("Time (s)", "Net Thrust (N)", "linear", "zero")
@@ -2753,7 +2840,7 @@ class Flight:
 
     @funcify_method("Time (s)", "Aerodynamic Spin Moment (Nm)", "spline", "zero")
     def aerodynamic_spin_moment(self):
-        """Aerodynamic spin moment as a Function of time."""
+        """Aerodynamic spin moment and roll control moment as a Function of time."""
         return self.M3
 
     # Energy

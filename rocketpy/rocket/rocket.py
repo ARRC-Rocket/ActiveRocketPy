@@ -23,6 +23,8 @@ from rocketpy.rocket.aero_surface.fins.free_form_fins import FreeFormFins
 from rocketpy.rocket.aero_surface.generic_surface import GenericSurface
 from rocketpy.rocket.components import Components
 from rocketpy.rocket.parachute import Parachute
+from rocketpy.rocket.roll_control import RollControl
+from rocketpy.rocket.tvc import TVC
 from rocketpy.tools import (
     deprecated,
     find_obj_from_hash,
@@ -207,6 +209,8 @@ class Rocket:
         Rocket's inertia tensor 13 component with unloaded motor,in kg*m^2.
     Rocket.dry_I_23 : float
         Rocket's inertia tensor 23 component with unloaded motor,in kg*m^2.
+    Rocket.volume : float
+        Rocket's total volume in m³.
     """
 
     def __init__(  # pylint: disable=too-many-statements
@@ -214,6 +218,7 @@ class Rocket:
         radius,
         mass,
         inertia,
+        volume,
         power_off_drag,
         power_on_drag,
         center_of_mass_without_motor,
@@ -240,6 +245,10 @@ class Rocket:
             in the direction of e_i x e_j. Alternatively, the inertia tensor can
             be given as (I_11, I_22, I_33), where I_12 = I_13 = I_23 = 0. This
             can also be called as "rocket dry inertia tensor".
+        volume : int, float
+            Rocket's total volume in m³. This can be used for buoyancy calculations.
+            It can also be set to 0 if buoyancy is not being considered.
+            Use None to let the program calculate the volume based on the added components.
         power_off_drag : int, float, callable, string, array
             Rocket's drag coefficient when the motor is off. Can be given as an
             entry to the Function class. See help(Function) for more
@@ -374,6 +383,13 @@ class Rocket:
         self.evaluate_center_of_mass()
         self.evaluate_reduced_mass()
         self.evaluate_thrust_to_weight()
+
+        if volume is None:
+            # calculate volume properties for buoyancy
+            self.evaluate_volume()
+        else:
+            # Volume and buoyancy properties
+            self.volume = volume
 
         # Evaluate stability (even though no aerodynamic surfaces are present yet)
         self.evaluate_center_of_pressure()
@@ -665,6 +681,20 @@ class Rocket:
             lower=0, upper=self.motor.burn_out_time, samples=200
         )
         return self.static_margin
+
+    def evaluate_volume(self):
+        """Calculates the total volume of the rocket including the motor.
+        The volume must be set manually using set_volume() or calculated from motor.
+
+        Returns
+        -------
+        self.volume : float
+            Total volume of the rocket in m³.
+        """
+        # TODO: calculate volume from radius and surface locations
+        self.volume = 0
+
+        return self.volume
 
     def evaluate_dry_inertias(self):
         """Calculates and returns the rocket's dry inertias relative to
@@ -1721,6 +1751,242 @@ class Rocket:
             return air_brakes, _controller
         else:
             return air_brakes
+
+    def add_tvc(
+        self,
+        gimbal_range,
+        controller_function,
+        sampling_rate,
+        clamp=True,
+        initial_observed_variables=None,
+        return_controller=False,
+        name="TVC",
+        controller_name="TVC Controller",
+    ):
+        """Creates a new thrust vector control (TVC) system, storing its
+        parameters such as gimbal angle maximum controller function, and
+        sampling rate.
+
+        Parameters
+        ----------
+        gimbal_range : int, float
+            Maximum gimbal range in degrees. Both x and y gimbal
+            angles are clamped to this range if clamp is True. Must be
+            positive.
+        controller_function : function, callable
+            An user-defined function responsible for controlling the TVC system.
+            This function is expected to take the following arguments, in order:
+
+            1. `time` (float): The current simulation time in seconds.
+            2. `sampling_rate` (float): The rate at which the controller
+               function is called, measured in Hertz (Hz).
+            3. `state` (list): The state vector of the simulation, structured as
+               `[x, y, z, vx, vy, vz, e0, e1, e2, e3, wx, wy, wz]`.
+            4. `state_history` (list): A record of the rocket's state at each
+               step throughout the simulation. The state_history is organized as a
+               list of lists, with each sublist containing a state vector. The last
+               item in the list always corresponds to the previous state vector,
+               providing a chronological sequence of the rocket's evolving states.
+            5. `observed_variables` (list): A list containing the variables that
+               the controller function manages. The initial values in the first
+               step of the simulation are provided by the
+               `initial_observed_variables` argument.
+            6. `interactive_objects` (list): A list containing the TVC object
+               that the controller function can interact with.
+            7. `sensors` (list): A list of sensors that are attached to the
+                rocket. The most recent measurements of the sensors are provided
+                with the ``sensor.measurement`` attribute. The sensors are
+                listed in the same order as they are added to the rocket
+               ``interactive_objects``
+
+            This function will be called during the simulation at the specified
+            sampling rate. The function should evaluate and change the observed
+            objects as needed. The function should return None.
+
+            .. note::
+
+                The function will be called according to the sampling rate specified.
+
+        sampling_rate : float
+            The sampling rate of the controller function in Hertz (Hz). This
+            means that the controller function will be called every
+            `1/sampling_rate` seconds.
+        clamp : bool, optional
+            If True, the simulation will clamp gimbal angles to the range
+            [-gimbal_range, gimbal_range]. If False, a warning is
+            issued when gimbal angles exceed the range. Default is True.
+        initial_observed_variables : list, optional
+            A list of the initial values of the variables that the controller
+            function manages. This list is used to initialize the
+            `observed_variables` argument of the controller function. The
+            default value is None, which initializes the list as an empty list.
+        return_controller : bool, optional
+            If True, the function will return the controller object created.
+            Default is False.
+        name : string, optional
+            TVC system name. Has no impact in simulation, as it is only used to
+            display data in a more organized matter. Default is "TVC".
+        controller_name : string, optional
+            Controller name. Has no impact in simulation, as it is only used to
+            display data in a more organized matter. Default is "TVC Controller".
+
+        Returns
+        -------
+        tvc : TVC
+            TVC object created.
+        controller : Controller, optional
+            Controller object created (only if return_controller is True).
+        """
+        if hasattr(self, "tvc"):
+            # pylint: disable=access-member-before-definition
+            print(
+                "Only one TVC per rocket is currently supported. "
+                + "Overwriting previous TVC and controllers."
+            )
+            self._controllers = [
+                controller
+                for controller in self._controllers
+                if not isinstance(controller.interactive_objects, TVC)
+            ]
+
+        tvc = TVC(
+            gimbal_range=gimbal_range,
+            clamp=clamp,
+            gimbal_angle_x=0,
+            gimbal_angle_y=0,
+            name=name,
+        )
+        _controller = _Controller(
+            interactive_objects=tvc,
+            controller_function=controller_function,
+            sampling_rate=sampling_rate,
+            initial_observed_variables=initial_observed_variables,
+            name=controller_name,
+        )
+        self.tvc = tvc
+        self._add_controllers(_controller)
+        if return_controller:
+            return tvc, _controller
+        else:
+            return tvc
+
+    def add_roll_control(
+        self,
+        max_roll_torque,
+        controller_function,
+        sampling_rate,
+        clamp=True,
+        initial_observed_variables=None,
+        return_controller=False,
+        name="Roll Control",
+        controller_name="Roll Control Controller",
+    ):
+        """Creates a new roll control system, storing its parameters such as
+        maximum roll torque, controller function, and sampling rate.
+
+        Parameters
+        ----------
+        max_roll_torque : int, float
+            Maximum roll torque magnitude in N·m. Must be non-negative.
+        controller_function : function, callable
+            An user-defined function responsible for controlling the roll control
+            system. This function is expected to take the following arguments, in
+            order:
+
+            1. `time` (float): The current simulation time in seconds.
+            2. `sampling_rate` (float): The rate at which the controller
+               function is called, measured in Hertz (Hz).
+            3. `state` (list): The state vector of the simulation, structured as
+               `[x, y, z, vx, vy, vz, e0, e1, e2, e3, wx, wy, wz]`.
+            4. `state_history` (list): A record of the rocket's state at each
+               step throughout the simulation. The state_history is organized as a
+               list of lists, with each sublist containing a state vector. The last
+               item in the list always corresponds to the previous state vector,
+               providing a chronological sequence of the rocket's evolving states.
+            5. `observed_variables` (list): A list containing the variables that
+               the controller function manages. The initial values in the first
+               step of the simulation are provided by the
+               `initial_observed_variables` argument.
+            6. `interactive_objects` (list): A list containing the roll control
+               object that the controller function can interact with.
+            7. `sensors` (list): A list of sensors that are attached to the
+                rocket. The most recent measurements of the sensors are provided
+                with the ``sensor.measurement`` attribute. The sensors are
+                listed in the same order as they are added to the rocket
+               `interactive_objects`
+
+            This function will be called during the simulation at the specified
+            sampling rate. The function should evaluate and change the observed
+            objects as needed. The function should return None.
+
+            .. note::
+
+                The function will be called according to the sampling rate
+                specified.
+
+        sampling_rate : float
+            The sampling rate of the controller function in Hertz (Hz). This
+            means that the controller function will be called every
+            `1/sampling_rate` seconds.
+        clamp : bool, optional
+            If True, the simulation will clamp roll torque to the range
+            [-max_roll_torque, max_roll_torque]. If False, a warning is
+            issued when roll torque exceeds the range. Default is True.
+        initial_observed_variables : list, optional
+            A list of the initial values of the variables that the controller
+            function manages. This list is used to initialize the
+            `observed_variables` argument of the controller function. The
+            default value is None, which initializes the list as an empty list.
+        return_controller : bool, optional
+            If True, the function will return the controller object created.
+            Default is False.
+        name : string, optional
+            Roll control system name. Has no impact in simulation, as it is only
+            used to display data in a more organized matter. Default is
+            "Roll Control".
+        controller_name : string, optional
+            Controller name. Has no impact in simulation, as it is only used to
+            display data in a more organized matter. Default is
+            "Roll Control Controller".
+
+        Returns
+        -------
+        roll_control : RollControl
+            RollControl object created.
+        controller : Controller, optional
+            Controller object created (only if return_controller is True).
+        """
+        if hasattr(self, "roll_control"):
+            # pylint: disable=access-member-before-definition
+            print(
+                "Only one roll control per rocket is currently supported. "
+                + "Overwriting previous roll control and controllers."
+            )
+            self._controllers = [
+                controller
+                for controller in self._controllers
+                if not isinstance(controller.interactive_objects, RollControl)
+            ]
+
+        roll_control = RollControl(
+            max_roll_torque=max_roll_torque,
+            clamp=clamp,
+            roll_torque=0,
+            name=name,
+        )
+        _controller = _Controller(
+            interactive_objects=roll_control,
+            controller_function=controller_function,
+            sampling_rate=sampling_rate,
+            initial_observed_variables=initial_observed_variables,
+            name=controller_name,
+        )
+        self.roll_control = roll_control
+        self._add_controllers(_controller)
+        if return_controller:
+            return roll_control, _controller
+        else:
+            return roll_control
 
     def set_rail_buttons(
         self,
