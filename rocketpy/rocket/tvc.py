@@ -63,6 +63,7 @@ class TVC():
         -------
         None
         """
+        self.name = name
         self.gimbal_range = gimbal_range
         self.clamp = clamp
         self.initial_gimbal_angle_x = gimbal_angle_x

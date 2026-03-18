@@ -1812,8 +1812,9 @@ class Rocket:
             # pylint: disable=access-member-before-definition
             print(
                 "Only one TVC per rocket is currently supported. "
-                + "Overwriting previous TVC."
+                + "Overwriting previous TVC and controllers."
             )
+            self._controllers = [controller for controller in self._controllers if not isinstance(controller.interactive_objects, TVC)]
 
         tvc = TVC(
             gimbal_range=gimbal_range,
