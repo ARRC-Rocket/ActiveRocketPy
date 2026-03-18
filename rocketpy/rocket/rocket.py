@@ -317,7 +317,6 @@ class Rocket:
         self.parachutes = []
         self._controllers = []
         self.air_brakes = []
-        self.tvc = []
         self.sensors = Components()
         self.aerodynamic_surfaces = Components()
         self.surfaces_cp_to_cdm = {}
@@ -1809,6 +1808,13 @@ class Rocket:
         controller : Controller, optional
             Controller object created (only if return_controller is True).
         """
+        if hasattr(self, "tvc"):
+            # pylint: disable=access-member-before-definition
+            print(
+                "Only one TVC per rocket is currently supported. "
+                + "Overwriting previous TVC."
+            )
+
         tvc = TVC(
             gimbal_range=gimbal_range,
             clamp=clamp,
@@ -1823,7 +1829,7 @@ class Rocket:
             initial_observed_variables=initial_observed_variables,
             name=controller_name,
         )
-        self.tvc.append(tvc)
+        self.tvc = tvc
         self._add_controllers(_controller)
         if return_controller:
             return tvc, _controller

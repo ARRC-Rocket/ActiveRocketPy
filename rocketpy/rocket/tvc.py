@@ -2,14 +2,9 @@ import warnings
 
 import numpy as np
 
-from rocketpy.mathutils.function import Function
-from rocketpy.mathutils.vector_matrix import Vector
-from rocketpy.tvc_prints import _TVCPrints
+from ..prints.tvc_prints import _TVCPrints
 
-from .aero_surface.aero_surface import AeroSurface
-
-
-class TVC(AeroSurface):
+class TVC():
     """Thrust Vector Control (TVC) system class. Inherits from AeroSurface.
 
     This class represents a thrust vector control system that allows deflection
@@ -68,7 +63,6 @@ class TVC(AeroSurface):
         -------
         None
         """
-        super().__init__(name, 0, None)
         self.gimbal_range = gimbal_range
         self.clamp = clamp
         self.initial_gimbal_angle_x = gimbal_angle_x
