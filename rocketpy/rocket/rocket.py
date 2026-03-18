@@ -207,6 +207,8 @@ class Rocket:
         Rocket's inertia tensor 13 component with unloaded motor,in kg*m^2.
     Rocket.dry_I_23 : float
         Rocket's inertia tensor 23 component with unloaded motor,in kg*m^2.
+    Rocket.volume : float
+        Rocket's total volume in m³.
     """
 
     def __init__(  # pylint: disable=too-many-statements
@@ -214,6 +216,7 @@ class Rocket:
         radius,
         mass,
         inertia,
+        volume,
         power_off_drag,
         power_on_drag,
         center_of_mass_without_motor,
@@ -240,6 +243,10 @@ class Rocket:
             in the direction of e_i x e_j. Alternatively, the inertia tensor can
             be given as (I_11, I_22, I_33), where I_12 = I_13 = I_23 = 0. This
             can also be called as "rocket dry inertia tensor".
+        volume : int, float
+            Rocket's total volume in m³. This can be used for buoyancy calculations.
+            It can also be set to 0 if buoyancy is not being considered. 
+            Use None to let the program calculate the volume based on the added components.
         power_off_drag : int, float, callable, string, array
             Rocket's drag coefficient when the motor is off. Can be given as an
             entry to the Function class. See help(Function) for more
@@ -374,6 +381,14 @@ class Rocket:
         self.evaluate_center_of_mass()
         self.evaluate_reduced_mass()
         self.evaluate_thrust_to_weight()
+
+        if volume is None:
+            # calculate volume properties for buoyancy
+            self.evaluate_volume()
+        else:
+            # Volume and buoyancy properties
+            self.volume = volume
+        
 
         # Evaluate stability (even though no aerodynamic surfaces are present yet)
         self.evaluate_center_of_pressure()
@@ -665,6 +680,20 @@ class Rocket:
             lower=0, upper=self.motor.burn_out_time, samples=200
         )
         return self.static_margin
+
+    def evaluate_volume(self):
+        """Calculates the total volume of the rocket including the motor.
+        The volume must be set manually using set_volume() or calculated from motor.
+
+        Returns
+        -------
+        self.volume : float
+            Total volume of the rocket in m³.
+        """
+        # TODO: calculate volume from radius and surface locations
+        self.volume = 0
+        
+        return self.volume
 
     def evaluate_dry_inertias(self):
         """Calculates and returns the rocket's dry inertias relative to
