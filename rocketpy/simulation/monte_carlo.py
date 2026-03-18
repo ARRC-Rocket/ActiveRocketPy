@@ -454,7 +454,7 @@ class MonteCarlo:
         Flight
             The flight object of the simulation.
         """
-        return Flight(
+        flight = Flight(
             rocket=self.rocket.create_object(),
             environment=self.environment.create_object(),
             rail_length=self.flight._randomize_rail_length(),
@@ -467,6 +467,10 @@ class MonteCarlo:
             max_time_step=self.flight.max_time_step,
             min_time_step=self.flight.min_time_step,
         )
+        flight.simulate()
+        flight.initalize_prints_plots()
+        
+        return flight
 
     def __evaluate_flight_inputs(self, sim_idx):
         """Evaluates the inputs of a single flight simulation.
