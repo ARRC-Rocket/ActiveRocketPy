@@ -4,7 +4,8 @@ import numpy as np
 
 from ..prints.tvc_prints import _TVCPrints
 
-class TVC():
+
+class TVC:
     """Thrust Vector Control (TVC) system class. Inherits from AeroSurface.
 
     This class represents a thrust vector control system that allows deflection
@@ -128,8 +129,8 @@ class TVC():
         self.gimbal_angle_y = value[1]
 
     def _reset(self):
-        """Resets the TVC system to its initial state. This method is called 
-        at the beginning of each simulation to ensure the TVC system is in 
+        """Resets the TVC system to its initial state. This method is called
+        at the beginning of each simulation to ensure the TVC system is in
         the correct state."""
         self.gimbal_angle_x = self.initial_gimbal_angle_x
         self.gimbal_angle_y = self.initial_gimbal_angle_y

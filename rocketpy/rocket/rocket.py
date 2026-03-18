@@ -21,9 +21,9 @@ from rocketpy.rocket.aero_surface import (
 )
 from rocketpy.rocket.aero_surface.fins.free_form_fins import FreeFormFins
 from rocketpy.rocket.aero_surface.generic_surface import GenericSurface
-from rocketpy.rocket.tvc import TVC
 from rocketpy.rocket.components import Components
 from rocketpy.rocket.parachute import Parachute
+from rocketpy.rocket.tvc import TVC
 from rocketpy.tools import (
     deprecated,
     find_obj_from_hash,
@@ -1814,7 +1814,11 @@ class Rocket:
                 "Only one TVC per rocket is currently supported. "
                 + "Overwriting previous TVC and controllers."
             )
-            self._controllers = [controller for controller in self._controllers if not isinstance(controller.interactive_objects, TVC)]
+            self._controllers = [
+                controller
+                for controller in self._controllers
+                if not isinstance(controller.interactive_objects, TVC)
+            ]
 
         tvc = TVC(
             gimbal_range=gimbal_range,
