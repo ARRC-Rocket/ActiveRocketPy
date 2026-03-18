@@ -164,4 +164,6 @@ class StochasticFlight(StochasticModel):
             terminate_on_apogee=self.terminate_on_apogee,
             time_overshoot=self.time_overshoot,
             max_time=self.max_time,
+            max_time_step=self.max_time_step,
+            min_time_step=self.min_time_step,
         )
