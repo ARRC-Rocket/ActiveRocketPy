@@ -1252,9 +1252,11 @@ class Flight:
                     "time_overshoot has been set to False due to the presence "
                     "of controllers or sensors. "
                 )
-            # reset controllable object to initial state (only airbrakes for now)
+            # reset controllable objects to initial state (air brakes and TVC)
             for air_brakes in self.rocket.air_brakes:
                 air_brakes._reset()
+            if hasattr(self.rocket, "tvc"):
+                self.rocket.tvc._reset()
 
         self.sensor_data = {}
         for sensor in self.sensors:
@@ -1498,9 +1500,33 @@ class Flight:
                 + self.rocket.motor.pressure_thrust(pressure),
                 0,
             )
+
+            # TVC (Thrust Vector Control)
+            if hasattr(self.rocket, "tvc"):
+                # TVC Fz thrust: F = T * sqrt(1 - sin(gimbal_angle_x)**2 - sin(gimbal_angle_y)**2)
+                thrust3 = net_thrust * np.sqrt(
+                    1
+                    - np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180)) ** 2
+                    - np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180)) ** 2
+                )
+                tvc_lever = self.rocket.nozzle_to_cdm
+                # TVC Mx My moments: M = T * sin(x) * r
+                M1 += (
+                    np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180))
+                    * net_thrust
+                    * tvc_lever
+                )
+                M2 += (
+                    np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180))
+                    * net_thrust
+                    * tvc_lever
+                )
+            else:
+                thrust3 = net_thrust
             # Off center moment
-            M1 += self.rocket.thrust_eccentricity_y * net_thrust
-            M2 -= self.rocket.thrust_eccentricity_x * net_thrust
+            M1 += self.rocket.thrust_eccentricity_y * thrust3
+            M2 -= self.rocket.thrust_eccentricity_x * thrust3
+
         else:
             # Motor stopped
             # Inertias
@@ -1513,7 +1539,7 @@ class Flight:
             # Mass
             mass_flow_rate_at_t, propellant_mass_at_t = 0, 0
             # thrust
-            net_thrust = 0
+            thrust3 = 0
 
         # Retrieve important quantities
         # Inertias
@@ -1716,7 +1742,7 @@ class Flight:
                 + 2 * c * mass_flow_rate_at_t * omega1
             )
             / total_mass_at_t,
-            (R3 - b * propellant_mass_at_t * (alpha2 - omega1 * omega3) + net_thrust)
+            (R3 - b * propellant_mass_at_t * (alpha2 - omega1 * omega3) + thrust3)
             / total_mass_at_t,
         ]
         ax, ay, az = K @ Vector(L)
@@ -1910,14 +1936,38 @@ class Flight:
             M2 += N
             M3 += L
 
+        # TVC (Thrust Vector Control)
+        if hasattr(self.rocket, "tvc"):
+            tvc_lever = self.rocket.nozzle_to_cdm
+            # TVC Mx My moments: M = T * sin(x) * r
+            M1 += (
+                np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180))
+                * net_thrust
+                * tvc_lever
+            )
+            M2 += (
+                np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180))
+                * net_thrust
+                * tvc_lever
+            )
+            # TVC Fz thrust: F = T * sqrt(1 - sin^2(x) - sin^2(y))
+            thrust3 = net_thrust * (
+                np.sqrt(
+                    1
+                    - np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180)) ** 2
+                    - np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180)) ** 2
+                )
+            )
+        else:
+            thrust3 = net_thrust
         # Off center moment
         M1 += (
             self.rocket.cp_eccentricity_y * R3
-            + self.rocket.thrust_eccentricity_y * net_thrust
+            + self.rocket.thrust_eccentricity_y * thrust3
         )
         M2 -= (
             self.rocket.cp_eccentricity_x * R3
-            + self.rocket.thrust_eccentricity_x * net_thrust
+            + self.rocket.thrust_eccentricity_x * thrust3
         )
         M3 += self.rocket.cp_eccentricity_x * R2 - self.rocket.cp_eccentricity_y * R1
 
@@ -1928,7 +1978,7 @@ class Flight:
         T00 = total_mass * r_CM
         T03 = 2 * total_mass_dot * (r_NOZ - r_CM) - 2 * total_mass * r_CM_dot
         T04 = (
-            Vector([0, 0, net_thrust])
+            Vector([0, 0, thrust3])
             - total_mass * r_CM_ddot
             - 2 * total_mass_dot * r_CM_dot
             + total_mass_ddot * (r_NOZ - r_CM)
