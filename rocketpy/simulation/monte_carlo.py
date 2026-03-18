@@ -231,6 +231,8 @@ class MonteCarlo:
             self.__run_in_serial()
 
         self.__terminate_simulation()
+        
+        return self.results
 
     def __setup_files(self, append):
         """
@@ -461,6 +463,9 @@ class MonteCarlo:
             initial_solution=self.flight.initial_solution,
             terminate_on_apogee=self.flight.terminate_on_apogee,
             time_overshoot=self.flight.time_overshoot,
+            max_time=self.flight.max_time,
+            max_time_step=self.flight.max_time_step,
+            min_time_step=self.flight.min_time_step,
         )
 
     def __evaluate_flight_inputs(self, sim_idx):
@@ -721,7 +726,7 @@ class MonteCarlo:
         self.set_outputs_log()
         self.set_num_of_loaded_sims()
         self.set_results()
-        self.set_processed_results()
+        # self.set_processed_results()
 
     @property
     def error_file(self):
