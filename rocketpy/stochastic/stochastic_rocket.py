@@ -74,6 +74,8 @@ class StochasticRocket(StochasticModel):
         The inertia of the rocket around the xz axis.
     inertia_23 : tuple, list, int, float
         The inertia of the rocket around the yz axis.
+    volume : tuple, list, int, float
+        The volume of the rocket in m³.
     power_off_drag : list
         The power off drag of the rocket.
     power_on_drag : list
@@ -100,6 +102,7 @@ class StochasticRocket(StochasticModel):
         inertia_12=None,
         inertia_13=None,
         inertia_23=None,
+        volume=None,
         power_off_drag=None,
         power_on_drag=None,
         power_off_drag_factor=(1, 0),
@@ -132,6 +135,8 @@ class StochasticRocket(StochasticModel):
             The inertia of the rocket around the xz axis.
         inertia_23 : int, float, tuple, list, optional
             The inertia of the rocket around the yz axis.
+        volume : int, float, tuple, list, optional
+            The volume of the rocket in m³.
         power_off_drag : list, optional
             The power off drag of the rocket.
         power_on_drag : list, optional
@@ -164,6 +169,7 @@ class StochasticRocket(StochasticModel):
             I_12_without_motor=inertia_12,
             I_13_without_motor=inertia_13,
             I_23_without_motor=inertia_23,
+            volume=volume,
             power_off_drag=power_off_drag,
             power_on_drag=power_on_drag,
             power_off_drag_factor=power_off_drag_factor,
@@ -735,6 +741,7 @@ class StochasticRocket(StochasticModel):
                 generated_dict["I_13_without_motor"],
                 generated_dict["I_23_without_motor"],
             ),
+            volume=generated_dict["volume"],
             power_off_drag=generated_dict["power_off_drag"],
             power_on_drag=generated_dict["power_on_drag"],
             center_of_mass_without_motor=generated_dict["center_of_mass_without_motor"],
