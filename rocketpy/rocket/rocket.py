@@ -21,6 +21,7 @@ from rocketpy.rocket.aero_surface import (
 )
 from rocketpy.rocket.aero_surface.fins.free_form_fins import FreeFormFins
 from rocketpy.rocket.aero_surface.generic_surface import GenericSurface
+from rocketpy.rocket.tvc import TVC
 from rocketpy.rocket.components import Components
 from rocketpy.rocket.parachute import Parachute
 from rocketpy.tools import (
@@ -316,6 +317,7 @@ class Rocket:
         self.parachutes = []
         self._controllers = []
         self.air_brakes = []
+        self.tvc = []
         self.sensors = Components()
         self.aerodynamic_surfaces = Components()
         self.surfaces_cp_to_cdm = {}
@@ -1721,6 +1723,112 @@ class Rocket:
             return air_brakes, _controller
         else:
             return air_brakes
+
+    def add_tvc(
+        self,
+        gimbal_range,
+        controller_function,
+        sampling_rate,
+        clamp=True,
+        initial_observed_variables=None,
+        return_controller=False,
+        name="TVC",
+        controller_name="TVC Controller",
+    ):
+        """Creates a new thrust vector control (TVC) system, storing its
+        parameters such as gimbal angle maximum controller function, and
+        sampling rate.
+
+        Parameters
+        ----------
+        gimbal_range : int, float
+            Maximum gimbal range in degrees. Both x and y gimbal
+            angles are clamped to this range if clamp is True. Must be
+            positive.
+        controller_function : function, callable
+            An user-defined function responsible for controlling the TVC system.
+            This function is expected to take the following arguments, in order:
+
+            1. `time` (float): The current simulation time in seconds.
+            2. `sampling_rate` (float): The rate at which the controller
+               function is called, measured in Hertz (Hz).
+            3. `state` (list): The state vector of the simulation, structured as
+               `[x, y, z, vx, vy, vz, e0, e1, e2, e3, wx, wy, wz]`.
+            4. `state_history` (list): A record of the rocket's state at each
+               step throughout the simulation. The state_history is organized as a
+               list of lists, with each sublist containing a state vector. The last
+               item in the list always corresponds to the previous state vector,
+               providing a chronological sequence of the rocket's evolving states.
+            5. `observed_variables` (list): A list containing the variables that
+               the controller function manages. The initial values in the first
+               step of the simulation are provided by the
+               `initial_observed_variables` argument.
+            6. `interactive_objects` (list): A list containing the TVC object
+               that the controller function can interact with.
+            7. `sensors` (list): A list of sensors that are attached to the
+                rocket. The most recent measurements of the sensors are provided
+                with the ``sensor.measurement`` attribute. The sensors are
+                listed in the same order as they are added to the rocket
+               ``interactive_objects``
+
+            This function will be called during the simulation at the specified
+            sampling rate. The function should evaluate and change the observed
+            objects as needed. The function should return None.
+
+            .. note::
+
+                The function will be called according to the sampling rate specified.
+
+        sampling_rate : float
+            The sampling rate of the controller function in Hertz (Hz). This
+            means that the controller function will be called every
+            `1/sampling_rate` seconds.
+        clamp : bool, optional
+            If True, the simulation will clamp gimbal angles to the range
+            [-gimbal_range, gimbal_range]. If False, a warning is
+            issued when gimbal angles exceed the range. Default is True.
+        initial_observed_variables : list, optional
+            A list of the initial values of the variables that the controller
+            function manages. This list is used to initialize the
+            `observed_variables` argument of the controller function. The
+            default value is None, which initializes the list as an empty list.
+        return_controller : bool, optional
+            If True, the function will return the controller object created.
+            Default is False.
+        name : string, optional
+            TVC system name. Has no impact in simulation, as it is only used to
+            display data in a more organized matter. Default is "TVC".
+        controller_name : string, optional
+            Controller name. Has no impact in simulation, as it is only used to
+            display data in a more organized matter. Default is "TVC Controller".
+
+        Returns
+        -------
+        tvc : TVC
+            TVC object created.
+        controller : Controller, optional
+            Controller object created (only if return_controller is True).
+        """
+        tvc = TVC(
+            gimbal_range=gimbal_range,
+            clamp=clamp,
+            gimbal_angle_x=0,
+            gimbal_angle_y=0,
+            name=name,
+        )
+        _controller = _Controller(
+            interactive_objects=tvc,
+            controller_function=controller_function,
+            sampling_rate=sampling_rate,
+            initial_observed_variables=initial_observed_variables,
+            name=controller_name,
+        )
+        self.tvc.append(tvc)
+        self._add_controllers(_controller)
+        if return_controller:
+            return tvc, _controller
+        else:
+            return tvc
 
     def set_rail_buttons(
         self,
