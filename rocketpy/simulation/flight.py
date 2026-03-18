@@ -1509,7 +1509,7 @@ class Flight:
                     - np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180)) ** 2
                     - np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180)) ** 2
                 )
-                tvc_lever = self.rocket.center_of_mass(t) - self.rocket.nozzle_position
+                tvc_lever = self.rocket.nozzle_to_cdm
                 # TVC Mx My moments: M = T * sin(x) * r
                 M1 += (
                     np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180))
@@ -1938,7 +1938,7 @@ class Flight:
 
         # TVC (Thrust Vector Control)
         if hasattr(self.rocket, "tvc"):
-            tvc_lever = self.rocket.center_of_mass(t) - self.rocket.nozzle_position
+            tvc_lever = self.rocket.nozzle_to_cdm
             # TVC Mx My moments: M = T * sin(x) * r
             M1 += (
                 np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180))
