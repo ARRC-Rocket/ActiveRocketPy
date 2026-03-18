@@ -321,8 +321,8 @@ class Flight:
         Aerodynamic moment acting along the y-axis of the rocket's body
         frame as a function of time. Expressed in Newtons (N).
     Flight.M3 : Function
-        Aerodynamic moment acting along the z-axis of the rocket's body
-        frame as a function of time. Expressed in Newtons (N).
+        Aerodynamic moment and roll control moment acting along the z-axis of
+        the rocket's body frame as a function of time. Expressed in Newtons (N).
     Flight.net_thrust : Function
         Rocket's engine net thrust as a function of time in Newton.
         This is the actual thrust force experienced by the rocket.
@@ -1252,12 +1252,13 @@ class Flight:
                     "time_overshoot has been set to False due to the presence "
                     "of controllers or sensors. "
                 )
-            # reset controllable objects to initial state (air brakes and TVC)
+            # reset controllable objects to initial state (air brakes, TVC, and roll control)
             for air_brakes in self.rocket.air_brakes:
                 air_brakes._reset()
             if hasattr(self.rocket, "tvc"):
                 self.rocket.tvc._reset()
-
+            if hasattr(self.rocket, "roll_control"):
+                self.rocket.roll_control._reset()
         self.sensor_data = {}
         for sensor in self.sensors:
             sensor._reset(self.rocket)  # resets noise and measurement list
@@ -1662,6 +1663,10 @@ class Flight:
         # Off center moment
         M3 += self.rocket.cp_eccentricity_x * R2 - self.rocket.cp_eccentricity_y * R1
 
+        # Roll control moment
+        if hasattr(self.rocket, "roll_control"):
+            M3 += self.rocket.roll_control.roll_torque
+
         # Calculate derivatives
         # Angular acceleration
         alpha1 = (
@@ -1970,6 +1975,10 @@ class Flight:
             + self.rocket.thrust_eccentricity_x * thrust3
         )
         M3 += self.rocket.cp_eccentricity_x * R2 - self.rocket.cp_eccentricity_y * R1
+
+        # Roll control moment
+        if hasattr(self.rocket, "roll_control"):
+            M3 += self.rocket.roll_control.roll_torque
 
         weight_in_body_frame = Kt @ Vector(
             [0, 0, -total_mass * self.env.gravity.get_value_opt(z)]
@@ -2327,8 +2336,8 @@ class Flight:
 
     @funcify_method("Time (s)", "M3 (Nm)", "linear", "zero")
     def M3(self):
-        """Aerodynamic moment acting along the z-axis of the rocket's body
-        frame as a function of time. Expressed in Newtons (N)."""
+        """Aerodynamic moment and roll control moment acting along the z-axis
+        of the rocket's body frame as a function of time. Expressed in Newtons (N)."""
         return self.__evaluate_post_process[:, [0, 12]]
 
     @funcify_method("Time (s)", "Net Thrust (N)", "linear", "zero")
@@ -2803,7 +2812,7 @@ class Flight:
 
     @funcify_method("Time (s)", "Aerodynamic Spin Moment (Nm)", "spline", "zero")
     def aerodynamic_spin_moment(self):
-        """Aerodynamic spin moment as a Function of time."""
+        """Aerodynamic spin moment and roll control moment as a Function of time."""
         return self.M3
 
     # Energy

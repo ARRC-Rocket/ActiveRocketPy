@@ -23,6 +23,7 @@ from rocketpy.rocket.aero_surface.fins.free_form_fins import FreeFormFins
 from rocketpy.rocket.aero_surface.generic_surface import GenericSurface
 from rocketpy.rocket.components import Components
 from rocketpy.rocket.parachute import Parachute
+from rocketpy.rocket.roll_control import RollControl
 from rocketpy.rocket.tvc import TVC
 from rocketpy.tools import (
     deprecated,
@@ -1840,6 +1841,124 @@ class Rocket:
             return tvc, _controller
         else:
             return tvc
+
+    def add_roll_control(
+        self,
+        max_roll_torque,
+        controller_function,
+        sampling_rate,
+        clamp=True,
+        initial_observed_variables=None,
+        return_controller=False,
+        name="Roll Control",
+        controller_name="Roll Control Controller",
+    ):
+        """Creates a new roll control system, storing its parameters such as
+        maximum roll torque, controller function, and sampling rate.
+
+        Parameters
+        ----------
+        max_roll_torque : int, float
+            Maximum roll torque magnitude in N·m. Must be non-negative.
+        controller_function : function, callable
+            An user-defined function responsible for controlling the roll control
+            system. This function is expected to take the following arguments, in
+            order:
+
+            1. `time` (float): The current simulation time in seconds.
+            2. `sampling_rate` (float): The rate at which the controller
+               function is called, measured in Hertz (Hz).
+            3. `state` (list): The state vector of the simulation, structured as
+               `[x, y, z, vx, vy, vz, e0, e1, e2, e3, wx, wy, wz]`.
+            4. `state_history` (list): A record of the rocket's state at each
+               step throughout the simulation. The state_history is organized as a
+               list of lists, with each sublist containing a state vector. The last
+               item in the list always corresponds to the previous state vector,
+               providing a chronological sequence of the rocket's evolving states.
+            5. `observed_variables` (list): A list containing the variables that
+               the controller function manages. The initial values in the first
+               step of the simulation are provided by the
+               `initial_observed_variables` argument.
+            6. `interactive_objects` (list): A list containing the roll control
+               object that the controller function can interact with.
+            7. `sensors` (list): A list of sensors that are attached to the
+                rocket. The most recent measurements of the sensors are provided
+                with the ``sensor.measurement`` attribute. The sensors are
+                listed in the same order as they are added to the rocket
+               `interactive_objects`
+
+            This function will be called during the simulation at the specified
+            sampling rate. The function should evaluate and change the observed
+            objects as needed. The function should return None.
+
+            .. note::
+
+                The function will be called according to the sampling rate
+                specified.
+
+        sampling_rate : float
+            The sampling rate of the controller function in Hertz (Hz). This
+            means that the controller function will be called every
+            `1/sampling_rate` seconds.
+        clamp : bool, optional
+            If True, the simulation will clamp roll torque to the range
+            [-max_roll_torque, max_roll_torque]. If False, a warning is
+            issued when roll torque exceeds the range. Default is True.
+        initial_observed_variables : list, optional
+            A list of the initial values of the variables that the controller
+            function manages. This list is used to initialize the
+            `observed_variables` argument of the controller function. The
+            default value is None, which initializes the list as an empty list.
+        return_controller : bool, optional
+            If True, the function will return the controller object created.
+            Default is False.
+        name : string, optional
+            Roll control system name. Has no impact in simulation, as it is only
+            used to display data in a more organized matter. Default is
+            "Roll Control".
+        controller_name : string, optional
+            Controller name. Has no impact in simulation, as it is only used to
+            display data in a more organized matter. Default is
+            "Roll Control Controller".
+
+        Returns
+        -------
+        roll_control : RollControl
+            RollControl object created.
+        controller : Controller, optional
+            Controller object created (only if return_controller is True).
+        """
+        if hasattr(self, "roll_control"):
+            # pylint: disable=access-member-before-definition
+            print(
+                "Only one roll control per rocket is currently supported. "
+                + "Overwriting previous roll control and controllers."
+            )
+            self._controllers = [
+                controller
+                for controller in self._controllers
+                if not isinstance(controller.interactive_objects, RollControl)
+            ]
+
+        roll_control = RollControl(
+            max_roll_torque=max_roll_torque,
+            clamp=clamp,
+            roll_torque=0,
+            name=name,
+        )
+        _controller = _Controller(
+            interactive_objects=roll_control,
+            controller_function=controller_function,
+            sampling_rate=sampling_rate,
+            initial_observed_variables=initial_observed_variables,
+            name=controller_name,
+        )
+        self.roll_control = roll_control
+        self._add_controllers(_controller)
+        if return_controller:
+            return roll_control, _controller
+        else:
+            return roll_control
 
     def set_rail_buttons(
         self,
