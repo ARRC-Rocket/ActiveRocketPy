@@ -11,6 +11,7 @@ from rocketpy.motors.solid_motor import SolidMotor
 from rocketpy.rocket.aero_surface import (
     AirBrakes,
     EllipticalFins,
+    LinearGenericSurface,
     NoseCone,
     RailButtons,
     Tail,
@@ -25,6 +26,7 @@ from rocketpy.stochastic.stochastic_motor_model import StochasticMotorModel
 from .stochastic_aero_surfaces import (
     StochasticAirBrakes,
     StochasticEllipticalFins,
+    StochasticLinearGenericSurface,
     StochasticNoseCone,
     StochasticRailButtons,
     StochasticTail,
@@ -418,6 +420,36 @@ class StochasticRocket(StochasticModel):
 
         self.air_brakes.append(air_brakes)
         self.air_brake_controller = controller
+
+    def add_linear_generic_surface(self, linear_generic_surface, position=None):
+        """Adds a stochastic linear generic surface to the stochastic rocket.
+
+        Parameters
+        ----------
+        linear_generic_surface : StochasticLinearGenericSurface or LinearGenericSurface
+            The linear generic surface to be added to the stochastic rocket.
+        position : tuple, list, int, float, optional
+            The position of the linear generic surface.
+        """
+        if not isinstance(
+            linear_generic_surface,
+            (StochasticLinearGenericSurface, LinearGenericSurface),
+        ):
+            raise TypeError(
+                "`linear_generic_surface` must be of LinearGenericSurface or "
+                "StochasticLinearGenericSurface type"
+            )
+        if isinstance(linear_generic_surface, LinearGenericSurface):
+            linear_generic_surface = StochasticLinearGenericSurface(
+                linear_generic_surface=linear_generic_surface
+            )
+        self._add_surfaces(
+            linear_generic_surface,
+            position,
+            LinearGenericSurface,
+            StochasticLinearGenericSurface,
+            "`linear_generic_surface` must be of LinearGenericSurface or StochasticLinearGenericSurface type",
+        )
 
     def add_cp_eccentricity(self, x=None, y=None):
         """Moves line of action of aerodynamic forces to simulate an
