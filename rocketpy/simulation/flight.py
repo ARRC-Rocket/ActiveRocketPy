@@ -617,6 +617,13 @@ class Flight:
         )
         self.flight_phases.add_phase(self.max_time)
 
+        self._step_state = {
+            "phase_index": 0,
+            "node_index": 0,
+            "phase_initialized": False,
+            "finished": False,
+        }
+
     def simulate(self):
         """Call __simulate to simulate the flight trajectory.
 
@@ -1116,13 +1123,6 @@ class Flight:
 
     def step_simulation(self):
         """Step through the simulation by one time node."""
-        if not hasattr(self, "_step_state"):
-            self._step_state = {
-                "phase_index": 0,
-                "node_index": 0,
-                "phase_initialized": False,
-                "finished": False,
-            }
 
         state = self._step_state
         if state["finished"]:
@@ -1131,6 +1131,16 @@ class Flight:
         phase_index = state["phase_index"]
         if phase_index >= len(self.flight_phases) - 1:
             state["finished"] = True
+
+            self.t_final = self.t
+            self.__transform_pressure_signals_lists_to_functions()
+            if self._controllers:
+                # cache post process variables
+                self.__evaluate_post_process = np.array(self.__post_processed_variables)
+            if self.sensors:
+                self.__cache_sensor_data()
+            if self.verbose:
+                print(f"\n>>> Simulation Completed at Time: {self.t:3.4f} s")
             return
 
         phase = self.flight_phases[phase_index]
@@ -1244,6 +1254,7 @@ class Flight:
             if self.verbose:
                 print(f"Current Simulation Time: {self.t:3.4f} s", end="\r")
 
+            # Check for first out of rail event
             if len(self.out_of_rail_state) == 1 and (
                 self.y_sol[0] ** 2
                 + self.y_sol[1] ** 2
@@ -1311,6 +1322,50 @@ class Flight:
                     self.u_dot_generalized,
                     index=phase_index + 1,
                 )
+                phase.time_nodes.flush_after(node_index)
+                phase.time_nodes.add_node(self.t, [], [], [])
+                phase.solver.status = "finished"
+
+            # Check for impact event
+            if self.y_sol[2] < self.env.elevation:
+                # Check exactly when it happened using root finding
+                # Cubic Hermite interpolation (ax**3 + bx**2 + cx + d)
+                a, b, c, d = calculate_cubic_hermite_coefficients(
+                    x0=0,  # t0
+                    x1=float(phase.solver.step_size),  # t1 - t0
+                    y0=float(self.solution[-2][3] - self.env.elevation),  # z0
+                    yp0=float(self.solution[-2][6]),  # vz0
+                    y1=float(self.solution[-1][3] - self.env.elevation),  # z1
+                    yp1=float(self.solution[-1][6]),  # vz1
+                )
+                # Find roots
+                t_roots = find_roots_cubic_function(a, b, c, d)
+                # Find correct root
+                t1 = self.solution[-1][0] - self.solution[-2][0]
+                valid_t_root = [
+                    t_root.real
+                    for t_root in t_roots
+                    if abs(t_root.imag) < 0.001 and 0 < t_root.real < t1
+                ]
+                if len(valid_t_root) > 1:  # pragma: no cover
+                    raise ValueError(
+                        "Multiple roots found when solving for impact time."
+                    )
+                # Determine impact state at t_root
+                self.t = self.t_final = valid_t_root[0] + self.solution[-2][0]
+                interpolator = phase.solver.dense_output()
+                self.y_sol = self.impact_state = interpolator(self.t)
+                # Roll back solution
+                self.solution[-1] = [self.t, *self.y_sol]
+                # Save impact state
+                self.x_impact = self.impact_state[0]
+                self.y_impact = self.impact_state[1]
+                self.z_impact = self.impact_state[2]
+                self.impact_velocity = self.impact_state[5]
+                # Set last flight phase
+                self.flight_phases.flush_after(phase_index)
+                self.flight_phases.add_phase(self.t)
+                # Prepare to leave loops and start new flight phase
                 phase.time_nodes.flush_after(node_index)
                 phase.time_nodes.add_node(self.t, [], [], [])
                 phase.solver.status = "finished"
