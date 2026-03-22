@@ -1141,6 +1141,7 @@ class Flight:
                 self.__cache_sensor_data()
             if self.verbose:
                 print(f"\n>>> Simulation Completed at Time: {self.t:3.4f} s")
+            self.initalize_prints_plots()
             return
 
         phase = self.flight_phases[phase_index]
@@ -1215,26 +1216,6 @@ class Flight:
         # Feed required parachute and discrete controller triggers
         for callback in node.callbacks:
             callback(self)
-
-        if self.sensors:
-            u_dot = phase.derivative(self.t, self.y_sol)
-            for sensor, position in node._component_sensors:
-                relative_position = position - self.rocket._csys * Vector(
-                    [0, 0, self.rocket.center_of_dry_mass_position]
-                )
-                sensor.measure(
-                    self.t,
-                    u=self.y_sol,
-                    u_dot=u_dot,
-                    relative_position=relative_position,
-                    environment=self.env,
-                    gravity=self.env.gravity.get_value_opt(
-                        self.solution[-1][3]
-                    ),
-                    pressure=self.env.pressure,
-                    earth_radius=self.env.earth_radius,
-                    initial_coordinates=(self.env.latitude, self.env.longitude),
-                )
 
         for controller in node._controllers:
             controller(
@@ -1373,6 +1354,26 @@ class Flight:
             if self._controllers:
                 phase.derivative(
                     self.t, self.y_sol, post_processing=True
+                )
+
+        if self.sensors:
+            u_dot = phase.derivative(self.t, self.y_sol)
+            for sensor, position in node._component_sensors:
+                relative_position = position - self.rocket._csys * Vector(
+                    [0, 0, self.rocket.center_of_dry_mass_position]
+                )
+                sensor.measure(
+                    self.t,
+                    u=self.y_sol,
+                    u_dot=u_dot,
+                    relative_position=relative_position,
+                    environment=self.env,
+                    gravity=self.env.gravity.get_value_opt(
+                        self.solution[-1][3]
+                    ),
+                    pressure=self.env.pressure,
+                    earth_radius=self.env.earth_radius,
+                    initial_coordinates=(self.env.latitude, self.env.longitude),
                 )
 
         state["node_index"] += 1
