@@ -24,6 +24,9 @@ class GnssReceiver(ScalarSensor):
     altitude_accuracy : float
         Accuracy of the sensor interpreted as the standard deviation of the
         position in meters.
+    velocity_accuracy : float
+        Accuracy of the sensor interpreted as the standard deviation of the
+        velocity in meters per second.
     name : str
         The name of the sensor.
     measurement : tuple
@@ -39,6 +42,7 @@ class GnssReceiver(ScalarSensor):
         sampling_rate,
         position_accuracy=0,
         altitude_accuracy=0,
+        velocity_accuracy=0,
         name="GnssReceiver",
     ):
         """Initialize the Gnss Receiver sensor.
@@ -53,12 +57,16 @@ class GnssReceiver(ScalarSensor):
         altitude_accuracy : float
             Accuracy of the sensor interpreted as the standard deviation of the
             position in meters. Default is 0.
+        velocity_accuracy : float
+            Accuracy of the sensor interpreted as the standard deviation of the
+            velocity in meters per second. Default is 0.
         name : str
             The name of the sensor. Default is "GnssReceiver".
         """
         super().__init__(sampling_rate=sampling_rate, name=name)
         self.position_accuracy = position_accuracy
         self.altitude_accuracy = altitude_accuracy
+        self.velocity_accuracy = velocity_accuracy
 
         self.prints = _GnssReceiverPrints(self)
 
@@ -84,24 +92,20 @@ class GnssReceiver(ScalarSensor):
         """
         u = kwargs["u"]
         relative_position = kwargs["relative_position"]
-        lat, lon = kwargs["environment"].latitude, kwargs["environment"].longitude
-        earth_radius = kwargs["environment"].earth_radius
 
         # Get from state u and add relative position
         x, y, z = (Matrix.transformation(u[6:10]) @ relative_position) + Vector(u[0:3])
+        vx, vy, vz =  (Matrix.transformation(u[6:10]) @ Vector.cross(Vector(u[10:13]), relative_position)) + Vector(u[3:6])
+
         # Apply accuracy to the position
         x = np.random.normal(x, self.position_accuracy)
         y = np.random.normal(y, self.position_accuracy)
-        altitude = np.random.normal(z, self.altitude_accuracy)
+        z = np.random.normal(z, self.altitude_accuracy)
+        vx = np.random.normal(vx, self.velocity_accuracy)
+        vy = np.random.normal(vy, self.velocity_accuracy)
+        vz = np.random.normal(vz, self.velocity_accuracy)
 
-        # Convert x and y to latitude and longitude
-        drift = (x**2 + y**2) ** 0.5
-        bearing = (2 * math.pi - math.atan2(-x, y)) * (180 / math.pi)
-
-        # Applies the haversine equation to find final lat/lon coordinates
-        latitude, longitude = inverted_haversine(lat, lon, drift, bearing, earth_radius)
-
-        self.measurement = (latitude, longitude, altitude)
+        self.measurement = (x, y, z, vx, vy, vz)
         self._save_data((time, *self.measurement))
 
     def export_measured_data(self, filename, file_format="csv"):
@@ -122,7 +126,7 @@ class GnssReceiver(ScalarSensor):
         self._generic_export_measured_data(
             filename=filename,
             file_format=file_format,
-            data_labels=("t", "latitude", "longitude", "altitude"),
+            data_labels=("t", "x", "y", "z", "vx", "vy", "vz"),
         )
 
     def to_dict(self, **kwargs):
@@ -130,6 +134,7 @@ class GnssReceiver(ScalarSensor):
             "sampling_rate": self.sampling_rate,
             "position_accuracy": self.position_accuracy,
             "altitude_accuracy": self.altitude_accuracy,
+            "velocity_accuracy": self.velocity_accuracy,
             "name": self.name,
         }
 
