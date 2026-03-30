@@ -201,7 +201,8 @@ class MonteCarlo:
 
         Returns
         -------
-        None
+        dict
+            A dictionary containing the results of the Monte Carlo simulation.
 
         Notes
         -----
@@ -231,7 +232,7 @@ class MonteCarlo:
             self.__run_in_serial()
 
         self.__terminate_simulation()
-        
+
         return self.results
 
     def __setup_files(self, append):
@@ -468,8 +469,8 @@ class MonteCarlo:
             min_time_step=self.flight.min_time_step,
         )
         flight.simulate()
-        flight.initalize_prints_plots()
-        
+        flight.initialize_prints_plots()
+
         return flight
 
     def __evaluate_flight_inputs(self, sim_idx):

@@ -633,7 +633,7 @@ class Flight:
         """
         self.__simulate(self.verbose)
 
-    def initalize_prints_plots(self):
+    def initialize_prints_plots(self):
         """Initialize prints and plots objects.
 
         This should be called after simulating the flight to print and plot
@@ -796,7 +796,8 @@ class Flight:
                             lambda self, parachute_porosity=parachute.porosity: setattr(
                                 self, "parachute_porosity", parachute_porosity
                             ),
-                            lambda self, added_mass_coefficient=parachute.added_mass_coefficient: (
+                            lambda self,
+                            added_mass_coefficient=parachute.added_mass_coefficient: (
                                 setattr(
                                     self,
                                     "parachute_added_mass_coefficient",
@@ -1045,35 +1046,40 @@ class Flight:
                                             i += 1
                                         # Create flight phase for time after inflation
                                         callbacks = [
-                                            lambda self, parachute_cd_s=parachute.cd_s: (
+                                            lambda self,
+                                            parachute_cd_s=parachute.cd_s: (
                                                 setattr(
                                                     self,
                                                     "parachute_cd_s",
                                                     parachute_cd_s,
                                                 )
                                             ),
-                                            lambda self, parachute_radius=parachute.radius: (
+                                            lambda self,
+                                            parachute_radius=parachute.radius: (
                                                 setattr(
                                                     self,
                                                     "parachute_radius",
                                                     parachute_radius,
                                                 )
                                             ),
-                                            lambda self, parachute_height=parachute.height: (
+                                            lambda self,
+                                            parachute_height=parachute.height: (
                                                 setattr(
                                                     self,
                                                     "parachute_height",
                                                     parachute_height,
                                                 )
                                             ),
-                                            lambda self, parachute_porosity=parachute.porosity: (
+                                            lambda self,
+                                            parachute_porosity=parachute.porosity: (
                                                 setattr(
                                                     self,
                                                     "parachute_porosity",
                                                     parachute_porosity,
                                                 )
                                             ),
-                                            lambda self, added_mass_coefficient=parachute.added_mass_coefficient: (
+                                            lambda self,
+                                            added_mass_coefficient=parachute.added_mass_coefficient: (
                                                 setattr(
                                                     self,
                                                     "parachute_added_mass_coefficient",
@@ -1141,7 +1147,7 @@ class Flight:
                 self.__cache_sensor_data()
             if self.verbose:
                 print(f"\n>>> Simulation Completed at Time: {self.t:3.4f} s")
-            self.initalize_prints_plots()
+            self.initialize_prints_plots()
             return
 
         phase = self.flight_phases[phase_index]
@@ -1249,16 +1255,14 @@ class Flight:
                     self.effective_1rl**2
                 )
                 yp0 = 2 * sum(
-                    self.solution[-2][i] * self.solution[-2][i + 3]
-                    for i in [1, 2, 3]
+                    self.solution[-2][i] * self.solution[-2][i + 3] for i in [1, 2, 3]
                 )
                 t1 = self.solution[-1][0] - self.solution[-2][0]
                 y1 = sum(self.solution[-1][i] ** 2 for i in [1, 2, 3]) - (
                     self.effective_1rl**2
                 )
                 yp1 = 2 * sum(
-                    self.solution[-1][i] * self.solution[-1][i + 3]
-                    for i in [1, 2, 3]
+                    self.solution[-1][i] * self.solution[-1][i + 3] for i in [1, 2, 3]
                 )
 
                 self.solution[-2][3] += self.env.elevation
@@ -1352,9 +1356,7 @@ class Flight:
                 phase.solver.status = "finished"
 
             if self._controllers:
-                phase.derivative(
-                    self.t, self.y_sol, post_processing=True
-                )
+                phase.derivative(self.t, self.y_sol, post_processing=True)
 
         if self.sensors:
             u_dot = phase.derivative(self.t, self.y_sol)
@@ -1368,9 +1370,7 @@ class Flight:
                     u_dot=u_dot,
                     relative_position=relative_position,
                     environment=self.env,
-                    gravity=self.env.gravity.get_value_opt(
-                        self.solution[-1][3]
-                    ),
+                    gravity=self.env.gravity.get_value_opt(self.solution[-1][3]),
                     pressure=self.env.pressure,
                     earth_radius=self.env.earth_radius,
                     initial_coordinates=(self.env.latitude, self.env.longitude),

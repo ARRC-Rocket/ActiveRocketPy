@@ -95,7 +95,10 @@ class GnssReceiver(ScalarSensor):
 
         # Get from state u and add relative position
         x, y, z = (Matrix.transformation(u[6:10]) @ relative_position) + Vector(u[0:3])
-        vx, vy, vz =  (Matrix.transformation(u[6:10]) @ Vector.cross(Vector(u[10:13]), relative_position)) + Vector(u[3:6])
+        vx, vy, vz = (
+            Matrix.transformation(u[6:10])
+            @ Vector.cross(Vector(u[10:13]), relative_position)
+        ) + Vector(u[3:6])
 
         # Apply accuracy to the position
         x = np.random.normal(x, self.position_accuracy)
@@ -144,5 +147,6 @@ class GnssReceiver(ScalarSensor):
             sampling_rate=data["sampling_rate"],
             position_accuracy=data["position_accuracy"],
             altitude_accuracy=data["altitude_accuracy"],
+            velocity_accuracy=data["velocity_accuracy"],
             name=data["name"],
         )

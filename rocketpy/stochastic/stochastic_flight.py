@@ -51,6 +51,8 @@ class StochasticFlight(StochasticModel):
         terminate_on_apogee=None,
         time_overshoot=None,
         max_time=None,
+        min_time_step=None,
+        max_time_step=None,
     ):
         """Initializes the Stochastic Flight class.
 

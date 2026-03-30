@@ -605,7 +605,12 @@ class StochasticLinearGenericSurface(StochasticModel):
         coefficients : dict
             Dictionary containing the aerodynamic coefficients of the surface.
         center_of_pressure : tuple, optional
-            Application point of the aerodynamic forces and moments. The center of pressure is defined in the local coordinate system of the
+            Application point of the aerodynamic forces and moments. The center
+            of pressure is defined in the local coordinate system of the aerodynamic surface.
+        coefficient_curve_factor : tuple, list, int, float, optional
+            Scaling factor applied to the aerodynamic coefficient curves of the
+            generic surface to introduce stochastic variability.
+            ``linear_generic_surface`` is used.
         coefficient_curve_factor : tuple, list, int, float, optional
             The drag curve factor of the air brakes. This value scales the
             drag coefficient curve to introduce stochastic variability.
