@@ -170,6 +170,12 @@ class LinearGenericSurface(GenericSurface):
         if coefficients is None:
             coefficients = self._get_default_coefficients()
         if coefficient_constants is not None:
+            assert len(coefficient_constants) == len(
+                self._get_default_coefficients()
+            ), (
+                f"coefficient_constants must have {len(self._get_default_coefficients())} elements."
+            )
+
             # helper to build a 7‑input callable returning a fixed value
             def _constant_factory(value):
                 def _constant(
