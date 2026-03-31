@@ -35,10 +35,6 @@ class StochasticFlight(StochasticModel):
     max_time : int, float
         The maximum time of the flight simulation. If the flight simulation
         reaches this time, it will terminate. This attribute can not be randomized.
-    min_time_step : int, float
-        The minimum time step of the flight simulation. This attribute can not be randomized.
-    max_time_step : int, float
-        The maximum time step of the flight simulation. This attribute can not be randomized.
     """
 
     def __init__(
@@ -51,8 +47,6 @@ class StochasticFlight(StochasticModel):
         terminate_on_apogee=None,
         time_overshoot=None,
         max_time=None,
-        min_time_step=None,
-        max_time_step=None,
     ):
         """Initializes the Stochastic Flight class.
 
