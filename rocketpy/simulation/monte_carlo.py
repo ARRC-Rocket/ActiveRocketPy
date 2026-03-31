@@ -731,7 +731,7 @@ class MonteCarlo:
         self.set_outputs_log()
         self.set_num_of_loaded_sims()
         self.set_results()
-        # self.set_processed_results()
+        # self.set_processed_results() TODO: This fails when results contain arrays, need to be fixed
 
     @property
     def error_file(self):
