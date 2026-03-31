@@ -624,14 +624,28 @@ class Flight:
             "finished": False,
         }
 
-    def simulate(self):
-        """Call __simulate to simulate the flight trajectory.
+    def simulate(self, initialize_prints_plots=True):
+        """Run the flight simulation.
+
+        By default, this method both runs the numerical simulation and
+        initializes the ``prints`` and ``plots`` helpers for backward
+        compatibility with previous RocketPy versions, where these objects
+        were available immediately after a simulation run.
+
+        Parameters
+        ----------
+        initialize_prints_plots : bool, optional
+            If True (default), also create and attach the ``prints`` and
+            ``plots`` objects by calling :meth:`initialize_prints_plots`.
+            Set to False to run only the numerical simulation.
 
         Returns
         -------
         None
         """
         self.__simulate(self.verbose)
+        if initialize_prints_plots:
+            self.initialize_prints_plots()
 
     def initialize_prints_plots(self):
         """Initialize prints and plots objects.
