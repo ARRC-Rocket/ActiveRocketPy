@@ -1836,6 +1836,7 @@ class Flight:
             mass_flow_rate_at_t, propellant_mass_at_t = 0, 0
             # thrust
             thrust3 = 0
+            net_thrust = 0
 
         # Retrieve important quantities
         # Inertias
