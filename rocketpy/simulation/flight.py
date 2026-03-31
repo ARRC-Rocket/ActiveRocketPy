@@ -487,6 +487,7 @@ class Flight:
         name="Flight",
         equations_of_motion="standard",
         ode_solver="LSODA",
+        run_simulation=True,
     ):
         """Run a trajectory simulation.
 
@@ -570,6 +571,9 @@ class Flight:
             A custom ``scipy.integrate.OdeSolver`` can be passed as well.
             For more information on the integration methods, see the scipy
             documentation [1]_.
+        run_simulation : bool, optional
+            Whether to run the simulation immediately after initialization.
+            Default is True. Set to False to only initialize the Flight object.
 
 
         Returns
@@ -623,6 +627,8 @@ class Flight:
             "phase_initialized": False,
             "finished": False,
         }
+        if run_simulation:
+            self.simulate()
 
     def simulate(self, initialize_prints_plots=True):
         """Run the flight simulation.
