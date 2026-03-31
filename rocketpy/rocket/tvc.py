@@ -66,6 +66,7 @@ class TVC:
         None
         """
         self.name = name
+        assert gimbal_range >= 0, "gimbal_range must be non-negative."
         self.gimbal_range = gimbal_range
         self.clamp = clamp
         self.initial_gimbal_angle_x = gimbal_angle_x
