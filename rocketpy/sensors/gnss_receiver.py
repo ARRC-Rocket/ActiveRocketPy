@@ -71,8 +71,7 @@ class GnssReceiver(ScalarSensor):
         self.prints = _GnssReceiverPrints(self)
 
     def measure(self, time, **kwargs):
-        """Measure the position of the rocket in latitude, longitude and
-        altitude.
+        """Measure the position and velocity of the rocket in launch frame.
 
         Parameters
         ----------
