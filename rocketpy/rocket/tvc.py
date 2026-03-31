@@ -6,11 +6,12 @@ from ..prints.tvc_prints import _TVCPrints
 
 
 class TVC:
-    """Thrust Vector Control (TVC) system class. Inherits from AeroSurface.
+    """Thrust Vector Control (TVC) system class used as a controllable component.
 
     This class represents a thrust vector control system that allows deflection
     of the thrust vector through gimbal angles. TVC is typically controlled
-    by a controller function similar to air brakes.
+    by a controller function similar to air brakes and is used by ``Flight``
+    to model thrust vectoring behavior.
 
     Attributes
     ----------
