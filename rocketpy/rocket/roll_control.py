@@ -56,6 +56,7 @@ class RollControl:
         None
         """
         self.name = name
+        assert max_roll_torque >= 0, "max_roll_torque must be non-negative."
         self.max_roll_torque = max_roll_torque
         self.clamp = clamp
         self.initial_roll_torque = roll_torque
