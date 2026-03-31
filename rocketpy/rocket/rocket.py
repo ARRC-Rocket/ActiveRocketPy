@@ -218,11 +218,11 @@ class Rocket:
         radius,
         mass,
         inertia,
-        volume=None,
         power_off_drag,
         power_on_drag,
         center_of_mass_without_motor,
         coordinate_system_orientation="tail_to_nose",
+        volume=None,
     ):
         """Initializes Rocket class, process inertial, geometrical and
         aerodynamic parameters.
