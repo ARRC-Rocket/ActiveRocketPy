@@ -218,7 +218,7 @@ class Rocket:
         radius,
         mass,
         inertia,
-        volume,
+        volume=None,
         power_off_drag,
         power_on_drag,
         center_of_mass_without_motor,
@@ -389,6 +389,7 @@ class Rocket:
             self.evaluate_volume()
         else:
             # Volume and buoyancy properties
+            assert volume >= 0, "Volume must be non-negative"
             self.volume = volume
 
         # Evaluate stability (even though no aerodynamic surfaces are present yet)
@@ -684,7 +685,6 @@ class Rocket:
 
     def evaluate_volume(self):
         """Calculates the total volume of the rocket including the motor.
-        The volume must be set manually using set_volume() or calculated from motor.
 
         Returns
         -------
