@@ -321,8 +321,8 @@ class Flight:
         Aerodynamic moment acting along the y-axis of the rocket's body
         frame as a function of time. Expressed in Newtons (N).
     Flight.M3 : Function
-        Aerodynamic moment acting along the z-axis of the rocket's body
-        frame as a function of time. Expressed in Newtons (N).
+        Aerodynamic moment and roll control moment acting along the z-axis of
+        the rocket's body frame as a function of time. Expressed in Newtons (N).
     Flight.net_thrust : Function
         Rocket's engine net thrust as a function of time in Newton.
         This is the actual thrust force experienced by the rocket.
@@ -487,6 +487,7 @@ class Flight:
         name="Flight",
         equations_of_motion="standard",
         ode_solver="LSODA",
+        run_simulation=True,
     ):
         """Run a trajectory simulation.
 
@@ -570,6 +571,9 @@ class Flight:
             A custom ``scipy.integrate.OdeSolver`` can be passed as well.
             For more information on the integration methods, see the scipy
             documentation [1]_.
+        run_simulation : bool, optional
+            Whether to run the simulation immediately after initialization.
+            Default is True. Set to False to only initialize the Flight object.
 
 
         Returns
@@ -600,6 +604,7 @@ class Flight:
         self.name = name
         self.equations_of_motion = equations_of_motion
         self.ode_solver = ode_solver
+        self.verbose = verbose
 
         # Controller initialization
         self.__init_controllers()
@@ -616,9 +621,48 @@ class Flight:
         )
         self.flight_phases.add_phase(self.max_time)
 
-        # Simulate flight
-        self.__simulate(verbose)
+        self._step_state = {
+            "phase_index": 0,
+            "node_index": 0,
+            "phase_initialized": False,
+            "finished": False,
+        }
+        if run_simulation:
+            self.simulate()
 
+    def simulate(self, initialize_prints_plots=True):
+        """Run the flight simulation.
+
+        By default, this method both runs the numerical simulation and
+        initializes the ``prints`` and ``plots`` helpers for backward
+        compatibility with previous RocketPy versions, where these objects
+        were available immediately after a simulation run.
+
+        Parameters
+        ----------
+        initialize_prints_plots : bool, optional
+            If True (default), also create and attach the ``prints`` and
+            ``plots`` objects by calling :meth:`initialize_prints_plots`.
+            Set to False to run only the numerical simulation.
+
+        Returns
+        -------
+        None
+        """
+        self.__simulate(self.verbose)
+        if initialize_prints_plots:
+            self.initialize_prints_plots()
+
+    def initialize_prints_plots(self):
+        """Initialize prints and plots objects.
+
+        This should be called after simulating the flight to print and plot
+        all simulation results.
+
+        Returns
+        -------
+        None
+        """
         # Initialize prints and plots objects
         self.prints = _FlightPrints(self)
         self.plots = _FlightPlots(self)
@@ -1097,6 +1141,257 @@ class Flight:
         if verbose:
             print(f"\n>>> Simulation Completed at Time: {self.t:3.4f} s")
 
+    def step_simulation(self):
+        """Step through the simulation by one time node."""
+
+        state = self._step_state
+        if state["finished"]:
+            return
+
+        phase_index = state["phase_index"]
+        if phase_index >= len(self.flight_phases) - 1:
+            state["finished"] = True
+
+            self.t_final = self.t
+            self.__transform_pressure_signals_lists_to_functions()
+            if self._controllers:
+                # cache post process variables
+                self.__evaluate_post_process = np.array(self.__post_processed_variables)
+            if self.sensors:
+                self.__cache_sensor_data()
+            if self.verbose:
+                print(f"\n>>> Simulation Completed at Time: {self.t:3.4f} s")
+            self.initialize_prints_plots()
+            return
+
+        phase = self.flight_phases[phase_index]
+
+        # Determine maximum time for this flight phase
+        phase.time_bound = self.flight_phases[phase_index + 1].t
+
+        # Initialize phase only once
+        if not state["phase_initialized"]:
+            for callback in phase.callbacks:
+                callback(self)
+
+            self.function_evaluations.append(0)
+            phase.solver = self._solver(
+                phase.derivative,
+                t0=phase.t,
+                y0=self.y_sol,
+                t_bound=phase.time_bound,
+                rtol=self.rtol,
+                atol=self.atol,
+                max_step=self.max_time_step,
+                min_step=self.min_time_step,
+            )
+
+            phase.time_nodes = self.TimeNodes()
+            phase.time_nodes.add_node(phase.t, [], [], [])
+
+            if self.time_overshoot is False:
+                phase.time_nodes.add_parachutes(
+                    self.parachutes, phase.t, phase.time_bound
+                )
+                phase.time_nodes.add_sensors(
+                    self.rocket.sensors, phase.t, phase.time_bound
+                )
+                phase.time_nodes.add_controllers(
+                    self._controllers, phase.t, phase.time_bound
+                )
+
+            phase.time_nodes.add_node(phase.time_bound, [], [], [])
+            phase.time_nodes.sort()
+            phase.time_nodes.merge()
+
+            if phase.clear:
+                phase.time_nodes[0].parachutes = []
+                phase.time_nodes[0].callbacks = []
+
+            state["phase_initialized"] = True
+            state["node_index"] = 0
+
+        # Check if current phase is fully processed
+        if state["node_index"] >= len(phase.time_nodes) - 1:
+            state["phase_index"] += 1
+            state["phase_initialized"] = False
+            state["node_index"] = 0
+            return  # Move to next phase on next call
+
+        node_index = state["node_index"]
+        node = phase.time_nodes[node_index]
+
+        # Determine time bound for this time node
+        node.time_bound = phase.time_nodes[node_index + 1].t
+        phase.solver.t_bound = node.time_bound
+
+        if self.__is_lsoda:
+            phase.solver._lsoda_solver._integrator.rwork[0] = phase.solver.t_bound
+            phase.solver._lsoda_solver._integrator.call_args[4] = (
+                phase.solver._lsoda_solver._integrator.rwork
+            )
+
+        phase.solver.status = "running"
+
+        # Feed required parachute and discrete controller triggers
+        for callback in node.callbacks:
+            callback(self)
+
+        for controller in node._controllers:
+            controller(
+                self.t,
+                self.y_sol,
+                self.solution,
+                self.sensors,
+            )
+
+        while phase.solver.status == "running":
+            phase.solver.step()
+            self.solution += [[phase.solver.t, *phase.solver.y]]
+            self.function_evaluations.append(phase.solver.nfev)
+
+            self.t = phase.solver.t
+            self.y_sol = phase.solver.y
+            if self.verbose:
+                print(f"Current Simulation Time: {self.t:3.4f} s", end="\r")
+
+            # Check for first out of rail event
+            if len(self.out_of_rail_state) == 1 and (
+                self.y_sol[0] ** 2
+                + self.y_sol[1] ** 2
+                + (self.y_sol[2] - self.env.elevation) ** 2
+                >= self.effective_1rl**2
+            ):
+                self.solution[-2][3] -= self.env.elevation
+                self.solution[-1][3] -= self.env.elevation
+
+                y0 = sum(self.solution[-2][i] ** 2 for i in [1, 2, 3]) - (
+                    self.effective_1rl**2
+                )
+                yp0 = 2 * sum(
+                    self.solution[-2][i] * self.solution[-2][i + 3] for i in [1, 2, 3]
+                )
+                t1 = self.solution[-1][0] - self.solution[-2][0]
+                y1 = sum(self.solution[-1][i] ** 2 for i in [1, 2, 3]) - (
+                    self.effective_1rl**2
+                )
+                yp1 = 2 * sum(
+                    self.solution[-1][i] * self.solution[-1][i + 3] for i in [1, 2, 3]
+                )
+
+                self.solution[-2][3] += self.env.elevation
+                self.solution[-1][3] += self.env.elevation
+
+                a, b, c, d = calculate_cubic_hermite_coefficients(
+                    0,
+                    float(phase.solver.step_size),
+                    y0,
+                    yp0,
+                    y1,
+                    yp1,
+                )
+                a += 1e-5
+
+                t_roots = find_roots_cubic_function(a, b, c, d)
+                valid_t_root = [
+                    t_root.real
+                    for t_root in t_roots
+                    if 0 < t_root.real < t1 and abs(t_root.imag) < 0.001
+                ]
+
+                if len(valid_t_root) > 1:
+                    raise ValueError(
+                        "Multiple roots found when solving for rail exit time."
+                    )
+                if len(valid_t_root) == 0:
+                    raise ValueError(
+                        "No valid roots found when solving for rail exit time."
+                    )
+
+                self.t = valid_t_root[0] + self.solution[-2][0]
+                interpolator = phase.solver.dense_output()
+                self.y_sol = interpolator(self.t)
+                self.solution[-1] = [self.t, *self.y_sol]
+                self.out_of_rail_time = self.t
+                self.out_of_rail_time_index = len(self.solution) - 1
+                self.out_of_rail_state = self.y_sol
+
+                self.flight_phases.add_phase(
+                    self.t,
+                    self.u_dot_generalized,
+                    index=phase_index + 1,
+                )
+                phase.time_nodes.flush_after(node_index)
+                phase.time_nodes.add_node(self.t, [], [], [])
+                phase.solver.status = "finished"
+
+            # Check for impact event
+            if self.y_sol[2] < self.env.elevation:
+                # Check exactly when it happened using root finding
+                # Cubic Hermite interpolation (ax**3 + bx**2 + cx + d)
+                a, b, c, d = calculate_cubic_hermite_coefficients(
+                    x0=0,  # t0
+                    x1=float(phase.solver.step_size),  # t1 - t0
+                    y0=float(self.solution[-2][3] - self.env.elevation),  # z0
+                    yp0=float(self.solution[-2][6]),  # vz0
+                    y1=float(self.solution[-1][3] - self.env.elevation),  # z1
+                    yp1=float(self.solution[-1][6]),  # vz1
+                )
+                # Find roots
+                t_roots = find_roots_cubic_function(a, b, c, d)
+                # Find correct root
+                t1 = self.solution[-1][0] - self.solution[-2][0]
+                valid_t_root = [
+                    t_root.real
+                    for t_root in t_roots
+                    if abs(t_root.imag) < 0.001 and 0 < t_root.real < t1
+                ]
+                if len(valid_t_root) > 1:  # pragma: no cover
+                    raise ValueError(
+                        "Multiple roots found when solving for impact time."
+                    )
+                # Determine impact state at t_root
+                self.t = self.t_final = valid_t_root[0] + self.solution[-2][0]
+                interpolator = phase.solver.dense_output()
+                self.y_sol = self.impact_state = interpolator(self.t)
+                # Roll back solution
+                self.solution[-1] = [self.t, *self.y_sol]
+                # Save impact state
+                self.x_impact = self.impact_state[0]
+                self.y_impact = self.impact_state[1]
+                self.z_impact = self.impact_state[2]
+                self.impact_velocity = self.impact_state[5]
+                # Set last flight phase
+                self.flight_phases.flush_after(phase_index)
+                self.flight_phases.add_phase(self.t)
+                # Prepare to leave loops and start new flight phase
+                phase.time_nodes.flush_after(node_index)
+                phase.time_nodes.add_node(self.t, [], [], [])
+                phase.solver.status = "finished"
+
+            if self._controllers:
+                phase.derivative(self.t, self.y_sol, post_processing=True)
+
+        if self.sensors:
+            u_dot = phase.derivative(self.t, self.y_sol)
+            for sensor, position in node._component_sensors:
+                relative_position = position - self.rocket._csys * Vector(
+                    [0, 0, self.rocket.center_of_dry_mass_position]
+                )
+                sensor.measure(
+                    self.t,
+                    u=self.y_sol,
+                    u_dot=u_dot,
+                    relative_position=relative_position,
+                    environment=self.env,
+                    gravity=self.env.gravity.get_value_opt(self.solution[-1][3]),
+                    pressure=self.env.pressure,
+                    earth_radius=self.env.earth_radius,
+                    initial_coordinates=(self.env.latitude, self.env.longitude),
+                )
+
+        state["node_index"] += 1
+
     def __calculate_and_save_pressure_signals(self, parachute, t, z):
         """Gets noise and pressure signals and saves them in the parachute
         object given the current time and altitude.
@@ -1252,10 +1547,13 @@ class Flight:
                     "time_overshoot has been set to False due to the presence "
                     "of controllers or sensors. "
                 )
-            # reset controllable object to initial state (only airbrakes for now)
+            # reset controllable objects to initial state (air brakes, TVC, and roll control)
             for air_brakes in self.rocket.air_brakes:
                 air_brakes._reset()
-
+            if hasattr(self.rocket, "tvc"):
+                self.rocket.tvc._reset()
+            if hasattr(self.rocket, "roll_control"):
+                self.rocket.roll_control._reset()
         self.sensor_data = {}
         for sensor in self.sensors:
             sensor._reset(self.rocket)  # resets noise and measurement list
@@ -1498,9 +1796,33 @@ class Flight:
                 + self.rocket.motor.pressure_thrust(pressure),
                 0,
             )
+
+            # TVC (Thrust Vector Control)
+            if hasattr(self.rocket, "tvc"):
+                # TVC Fz thrust: F = T * sqrt(1 - sin(gimbal_angle_x)**2 - sin(gimbal_angle_y)**2)
+                thrust3 = net_thrust * np.sqrt(
+                    1
+                    - np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180)) ** 2
+                    - np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180)) ** 2
+                )
+                tvc_lever = self.rocket.nozzle_to_cdm
+                # TVC Mx My moments: M = T * sin(x) * r
+                M1 += (
+                    np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180))
+                    * net_thrust
+                    * tvc_lever
+                )
+                M2 += (
+                    np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180))
+                    * net_thrust
+                    * tvc_lever
+                )
+            else:
+                thrust3 = net_thrust
             # Off center moment
-            M1 += self.rocket.thrust_eccentricity_y * net_thrust
-            M2 -= self.rocket.thrust_eccentricity_x * net_thrust
+            M1 += self.rocket.thrust_eccentricity_y * thrust3
+            M2 -= self.rocket.thrust_eccentricity_x * thrust3
+
         else:
             # Motor stopped
             # Inertias
@@ -1513,6 +1835,7 @@ class Flight:
             # Mass
             mass_flow_rate_at_t, propellant_mass_at_t = 0, 0
             # thrust
+            thrust3 = 0
             net_thrust = 0
 
         # Retrieve important quantities
@@ -1636,6 +1959,10 @@ class Flight:
         # Off center moment
         M3 += self.rocket.cp_eccentricity_x * R2 - self.rocket.cp_eccentricity_y * R1
 
+        # Roll control moment
+        if hasattr(self.rocket, "roll_control"):
+            M3 += self.rocket.roll_control.roll_torque
+
         # Calculate derivatives
         # Angular acceleration
         alpha1 = (
@@ -1716,11 +2043,15 @@ class Flight:
                 + 2 * c * mass_flow_rate_at_t * omega1
             )
             / total_mass_at_t,
-            (R3 - b * propellant_mass_at_t * (alpha2 - omega1 * omega3) + net_thrust)
+            (R3 - b * propellant_mass_at_t * (alpha2 - omega1 * omega3) + thrust3)
             / total_mass_at_t,
         ]
         ax, ay, az = K @ Vector(L)
         az -= self.env.gravity.get_value_opt(z)  # Include gravity
+
+        # Include buoyancy force: F_buoyancy = rho * V * g (upward)
+        buoyancy_force = rho * self.rocket.volume * self.env.gravity.get_value_opt(z)
+        az += buoyancy_force / total_mass_at_t  # Add buoyancy acceleration
 
         # Coriolis acceleration
         _, w_earth_y, w_earth_z = self.env.earth_rotation_vector
@@ -1910,25 +2241,56 @@ class Flight:
             M2 += N
             M3 += L
 
+        # TVC (Thrust Vector Control)
+        if hasattr(self.rocket, "tvc"):
+            tvc_lever = self.rocket.nozzle_to_cdm
+            # TVC Mx My moments: M = T * sin(x) * r
+            M1 += (
+                np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180))
+                * net_thrust
+                * tvc_lever
+            )
+            M2 += (
+                np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180))
+                * net_thrust
+                * tvc_lever
+            )
+            # TVC Fz thrust: F = T * sqrt(1 - sin^2(x) - sin^2(y))
+            thrust3 = net_thrust * (
+                np.sqrt(
+                    1
+                    - np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180)) ** 2
+                    - np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180)) ** 2
+                )
+            )
+        else:
+            thrust3 = net_thrust
         # Off center moment
         M1 += (
             self.rocket.cp_eccentricity_y * R3
-            + self.rocket.thrust_eccentricity_y * net_thrust
+            + self.rocket.thrust_eccentricity_y * thrust3
         )
         M2 -= (
             self.rocket.cp_eccentricity_x * R3
-            + self.rocket.thrust_eccentricity_x * net_thrust
+            + self.rocket.thrust_eccentricity_x * thrust3
         )
         M3 += self.rocket.cp_eccentricity_x * R2 - self.rocket.cp_eccentricity_y * R1
 
-        weight_in_body_frame = Kt @ Vector(
-            [0, 0, -total_mass * self.env.gravity.get_value_opt(z)]
+        # Roll control moment
+        if hasattr(self.rocket, "roll_control"):
+            M3 += self.rocket.roll_control.roll_torque
+
+        # Calculate weight with buoyancy: F_net = -total_mass * g + rho * V * g
+        gravity_accel = self.env.gravity.get_value_opt(z)
+        net_gravitational_force = (
+            -total_mass * gravity_accel + rho * self.rocket.volume * gravity_accel
         )
+        weight_in_body_frame = Kt @ Vector([0, 0, net_gravitational_force])
 
         T00 = total_mass * r_CM
         T03 = 2 * total_mass_dot * (r_NOZ - r_CM) - 2 * total_mass * r_CM_dot
         T04 = (
-            Vector([0, 0, net_thrust])
+            Vector([0, 0, thrust3])
             - total_mass * r_CM_ddot
             - 2 * total_mass_dot * r_CM_dot
             + total_mass_ddot * (r_NOZ - r_CM)
@@ -2043,9 +2405,13 @@ class Flight:
         Dx = pseudo_drag * freestream_x  # add eta efficiency for wake
         Dy = pseudo_drag * freestream_y
         Dz = pseudo_drag * freestream_z
+
+        # Calculate buoyancy force during parachute phase
+        buoyancy_force = rho * self.rocket.volume * self.env.gravity.get_value_opt(z)
+
         ax = Dx / (mp + ma)
         ay = Dy / (mp + ma)
-        az = (Dz - mp * self.env.gravity.get_value_opt(z)) / (mp + ma)
+        az = (Dz - mp * self.env.gravity.get_value_opt(z) + buoyancy_force) / (mp + ma)
 
         # Add coriolis acceleration
         _, w_earth_y, w_earth_z = self.env.earth_rotation_vector
@@ -2266,19 +2632,19 @@ class Flight:
     @funcify_method("Time (s)", "M1 (Nm)", "linear", "zero")
     def M1(self):
         """Aerodynamic moment acting along the x-axis of the rocket's body
-        frame as a function of time. Expressed in Newtons (N)."""
+        frame as a function of time. Expressed in Newtons (N-m)."""
         return self.__evaluate_post_process[:, [0, 10]]
 
     @funcify_method("Time (s)", "M2 (Nm)", "linear", "zero")
     def M2(self):
         """Aerodynamic moment acting along the y-axis of the rocket's body
-        frame as a function of time. Expressed in Newtons (N)."""
+        frame as a function of time. Expressed in Newtons (N-m)."""
         return self.__evaluate_post_process[:, [0, 11]]
 
     @funcify_method("Time (s)", "M3 (Nm)", "linear", "zero")
     def M3(self):
-        """Aerodynamic moment acting along the z-axis of the rocket's body
-        frame as a function of time. Expressed in Newtons (N)."""
+        """Aerodynamic moment and roll control moment acting along the z-axis
+        of the rocket's body frame as a function of time. Expressed in Newtons (N-m)."""
         return self.__evaluate_post_process[:, [0, 12]]
 
     @funcify_method("Time (s)", "Net Thrust (N)", "linear", "zero")
@@ -2753,7 +3119,7 @@ class Flight:
 
     @funcify_method("Time (s)", "Aerodynamic Spin Moment (Nm)", "spline", "zero")
     def aerodynamic_spin_moment(self):
-        """Aerodynamic spin moment as a Function of time."""
+        """Aerodynamic spin moment and roll control moment as a Function of time."""
         return self.M3
 
     # Energy
