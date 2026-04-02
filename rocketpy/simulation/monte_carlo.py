@@ -167,6 +167,7 @@ class MonteCarlo:
         number_of_simulations,
         append=False,
         parallel=False,
+        random_seed=None,
         n_workers=None,
         **kwargs,
     ):  # pylint: disable=too-many-statements
@@ -182,6 +183,8 @@ class MonteCarlo:
             False, the files will be overwritten. Default is False.
         parallel : bool, optional
             If True, the simulations will be run in parallel. Default is False.
+        random_seed : int, optional
+            The seed to set the random number generator. Default is None.
         n_workers : int, optional
             Number of workers to be used if ``parallel=True``. If None, the
             number of workers will be equal to the number of CPUs available.
@@ -227,9 +230,9 @@ class MonteCarlo:
         self.__setup_files(append)
 
         if parallel:
-            self.__run_in_parallel(n_workers)
+            self.__run_in_parallel(random_seed, n_workers)
         else:
-            self.__run_in_serial()
+            self.__run_in_serial(random_seed)
 
         self.__terminate_simulation()
 
@@ -268,9 +271,14 @@ class MonteCarlo:
         except OSError as error:
             raise OSError(f"Error creating files: {error}") from error
 
-    def __run_in_serial(self):
+    def __run_in_serial(self, random_seed=None):
         """
         Runs the monte carlo simulation in serial mode.
+
+        Parameters
+        ----------
+        random_seed : int, optional
+            The seed to set the random number generator in serial mode. Default is None.
 
         Returns
         -------
@@ -282,6 +290,9 @@ class MonteCarlo:
             start_time=time(),
         )
         try:
+            self.environment._set_stochastic(random_seed)
+            self.rocket._set_stochastic(random_seed)
+            self.flight._set_stochastic(random_seed)
             while sim_monitor.keep_simulating():
                 sim_monitor.increment()
                 inputs_json, outputs_json = "", ""
@@ -310,12 +321,14 @@ class MonteCarlo:
                 f.write(inputs_json)
             raise error
 
-    def __run_in_parallel(self, n_workers=None):
+    def __run_in_parallel(self, random_seed=None, n_workers=None):
         """
         Runs the monte carlo simulation in parallel.
 
         Parameters
         ----------
+        random_seed : int, optional
+            The seed to set the random sequence generator in parallel mode. Default is None.
         n_workers: int, optional
             Number of workers to be used. If None, the number of workers
             will be equal to the number of CPUs available. Default is None.
@@ -340,7 +353,7 @@ class MonteCarlo:
             )
 
             processes = []
-            seeds = np.random.SeedSequence().spawn(n_workers)
+            seeds = np.random.SeedSequence(random_seed).spawn(n_workers)
 
             for seed in seeds:
                 sim_producer = multiprocess.Process(
