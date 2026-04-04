@@ -1259,6 +1259,8 @@ class Flight:
                 self.rocket.tvc._reset()
             if hasattr(self.rocket, "roll_control"):
                 self.rocket.roll_control._reset()
+            if hasattr(self.rocket, "throttle_control"):
+                self.rocket.throttle_control._reset()
         self.sensor_data = {}
         for sensor in self.sensors:
             sensor._reset(self.rocket)  # resets noise and measurement list
@@ -1404,11 +1406,17 @@ class Flight:
             + self.rocket.motor.pressure_thrust(pressure),
             0,
         )
+        throttle = getattr(
+            getattr(self.rocket, "throttle_control", None),
+            "throttle",
+            1.0,
+        )
+        effective_thrust = net_thrust * throttle
         rho = self.env.density.get_value_opt(z)
         R3 = -0.5 * rho * (free_stream_speed**2) * self.rocket.area * (drag_coeff)
 
         # Calculate Linear acceleration
-        a3 = (R3 + net_thrust) / total_mass_at_t - (
+        a3 = (R3 + effective_thrust) / total_mass_at_t - (
             e0**2 - e1**2 - e2**2 + e3**2
         ) * self.env.gravity.get_value_opt(z)
         if a3 > 0:
@@ -1501,7 +1509,14 @@ class Flight:
                 + self.rocket.motor.pressure_thrust(pressure),
                 0,
             )
-
+            # Throttle control
+            throttle = getattr(
+                getattr(self.rocket, "throttle_control", None),
+                "throttle",
+                1.0,
+            )
+            effective_thrust = net_thrust * throttle
+            
             # TVC (Thrust Vector Control)
             if hasattr(self.rocket, "tvc"):
                 # TVC Fz thrust: F = T * sqrt(1 - sin(gimbal_angle_x)**2 - sin(gimbal_angle_y)**2)
@@ -1941,34 +1956,34 @@ class Flight:
             M2 += N
             M3 += L
 
+        # Throttle control
+        throttle = getattr(
+            getattr(self.rocket, "throttle_control", None),
+            "throttle",
+            1.0,
+        )
+        effective_thrust = net_thrust * throttle
+
         # TVC (Thrust Vector Control)
         if hasattr(self.rocket, "tvc"):
             tvc_lever = self.rocket.nozzle_to_cdm
-            # TVC Mx My moments: M = T * sin(x) * r
             M1 += (
                 np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180))
-                * net_thrust
+                * effective_thrust
                 * tvc_lever
             )
             M2 += (
                 np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180))
-                * net_thrust
+                * effective_thrust
                 * tvc_lever
             )
-            # TVC Fz thrust: F = T * sqrt(1 - sin^2(x) - sin^2(y))
-            thrust3 = net_thrust * (
-                np.sqrt(
-                    1
-                    - np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180)) ** 2
-                    - np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180)) ** 2
-                )
+            thrust3 = effective_thrust * np.sqrt(
+                1
+                - np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180)) ** 2
+                - np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180)) ** 2
             )
         else:
-            thrust3 = net_thrust
-
-        #Throttle Control
-        "throttle = self.rocket.throttle_control.throttle"
-        "effective_thrust = net_thrust * throttle"
+            thrust3 = effective_thrust
 
         # Off center moment
         M1 += (
