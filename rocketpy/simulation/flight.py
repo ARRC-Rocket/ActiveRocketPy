@@ -857,6 +857,131 @@ class Flight:
         if verbose:
             print(f"\n>>> Simulation Completed at Time: {self.t:3.4f} s")
 
+    def step_simulation(self):
+        """Step through the simulation by one time node."""
+
+        state = self._step_state
+        if state["finished"]:
+            return
+
+        phase_index = state["phase_index"]
+        if phase_index >= len(self.flight_phases) - 1:
+            state["finished"] = True
+
+            self.t_final = self.t
+            self.__transform_pressure_signals_lists_to_functions()
+            if self._controllers:
+                # cache post process variables
+                self.__evaluate_post_process = np.array(self.__post_processed_variables)
+            if self.sensors:
+                self.__cache_sensor_data()
+            if self.verbose:
+                print(f"\n>>> Simulation Completed at Time: {self.t:3.4f} s")
+            self.initialize_prints_plots()
+            return
+
+        phase = self.flight_phases[phase_index]
+
+        # Determine maximum time for this flight phase
+        phase.time_bound = self.flight_phases[phase_index + 1].t
+
+        # Initialize phase only once
+        if not state["phase_initialized"]:
+            
+            # Evaluate callbacks
+            for callback in phase.callbacks:
+                callback(self)
+
+            # Create solver for this flight phase
+            self.function_evaluations.append(0)
+
+            phase.solver = self._solver(
+                phase.derivative,
+                t0=phase.t,
+                y0=self.y_sol,
+                t_bound=phase.time_bound,
+                rtol=self.rtol,
+                atol=self.atol,
+                max_step=self.max_time_step,
+                min_step=self.min_time_step,
+            )
+
+            # Initialize phase time nodes
+            self.__setup_phase_time_nodes(phase)
+
+            state["phase_initialized"] = True
+            state["node_index"] = 0
+
+        # Check if current phase is fully processed
+        if state["node_index"] >= len(phase.time_nodes) - 1:
+            state["phase_index"] += 1
+            state["phase_initialized"] = False
+            state["node_index"] = 0
+            return  # Move to next phase on next call
+
+        node_index = state["node_index"]
+        node = phase.time_nodes[node_index]
+
+        # Determine time bound for this time node
+        node.time_bound = phase.time_nodes[node_index + 1].t
+        phase.solver.t_bound = node.time_bound
+
+        if self.__is_lsoda:
+            phase.solver._lsoda_solver._integrator.rwork[0] = phase.solver.t_bound
+            phase.solver._lsoda_solver._integrator.call_args[4] = (
+                phase.solver._lsoda_solver._integrator.rwork
+            )
+
+        phase.solver.status = "running"
+
+        # Feed required parachute and discrete controller triggers
+        # TODO: parachutes should be moved to controllers
+        for callback in node.callbacks:
+            callback(self)
+
+        for controller in node._controllers:
+            controller(
+                self.t,
+                self.y_sol,
+                self.solution,
+                self.sensors,
+                self.env,
+            )
+
+        # Placeholder for parachute triggers in step simulation, which is currently not migrated
+
+        while phase.solver.status == "running":
+            # Execute solver step, log solution and function evaluations
+            phase.solver.step()
+            self.solution += [[phase.solver.t, *phase.solver.y]]
+            self.function_evaluations.append(phase.solver.nfev)
+
+            # Update time and state
+            self.t = phase.solver.t
+            self.y_sol = phase.solver.y
+            if self.verbose:
+                print(f"Current Simulation Time: {self.t:3.4f} s", end="\r")
+
+            if self.__check_simulation_events(phase, phase_index, node_index):
+                break  # Stop if simulation termination event occurred
+
+            # Process overshootable time nodes if enabled
+            if self.time_overshoot and self.__process_overshootable_nodes(
+                phase, phase_index, node_index
+            ):
+                break
+
+            # If controlled flight, post process must be done on sim time
+            # Post-process controllers if needed
+            if self._controllers:
+                phase.derivative(self.t, self.y_sol, post_processing=True)
+
+        if self.sensors:
+            u_dot = phase.derivative(self.t, self.y_sol)
+            self.__measure_sensors(node._component_sensors, u_dot)
+
+        state["node_index"] += 1
+
     def __setup_phase_time_nodes(self, phase):
         """Set up time nodes for the current phase.
 
@@ -1458,257 +1583,6 @@ class Flight:
             return True
 
         return False
-
-    def step_simulation(self):
-        """Step through the simulation by one time node."""
-
-        state = self._step_state
-        if state["finished"]:
-            return
-
-        phase_index = state["phase_index"]
-        if phase_index >= len(self.flight_phases) - 1:
-            state["finished"] = True
-
-            self.t_final = self.t
-            self.__transform_pressure_signals_lists_to_functions()
-            if self._controllers:
-                # cache post process variables
-                self.__evaluate_post_process = np.array(self.__post_processed_variables)
-            if self.sensors:
-                self.__cache_sensor_data()
-            if self.verbose:
-                print(f"\n>>> Simulation Completed at Time: {self.t:3.4f} s")
-            self.initialize_prints_plots()
-            return
-
-        phase = self.flight_phases[phase_index]
-
-        # Determine maximum time for this flight phase
-        phase.time_bound = self.flight_phases[phase_index + 1].t
-
-        # Initialize phase only once
-        if not state["phase_initialized"]:
-            for callback in phase.callbacks:
-                callback(self)
-
-            self.function_evaluations.append(0)
-            phase.solver = self._solver(
-                phase.derivative,
-                t0=phase.t,
-                y0=self.y_sol,
-                t_bound=phase.time_bound,
-                rtol=self.rtol,
-                atol=self.atol,
-                max_step=self.max_time_step,
-                min_step=self.min_time_step,
-            )
-
-            phase.time_nodes = self.TimeNodes()
-            phase.time_nodes.add_node(phase.t, [], [], [])
-
-            if self.time_overshoot is False:
-                phase.time_nodes.add_parachutes(
-                    self.parachutes, phase.t, phase.time_bound
-                )
-                phase.time_nodes.add_sensors(
-                    self.rocket.sensors, phase.t, phase.time_bound
-                )
-                phase.time_nodes.add_controllers(
-                    self._controllers, phase.t, phase.time_bound
-                )
-
-            phase.time_nodes.add_node(phase.time_bound, [], [], [])
-            phase.time_nodes.sort()
-            phase.time_nodes.merge()
-
-            if phase.clear:
-                phase.time_nodes[0].parachutes = []
-                phase.time_nodes[0].callbacks = []
-
-            state["phase_initialized"] = True
-            state["node_index"] = 0
-
-        # Check if current phase is fully processed
-        if state["node_index"] >= len(phase.time_nodes) - 1:
-            state["phase_index"] += 1
-            state["phase_initialized"] = False
-            state["node_index"] = 0
-            return  # Move to next phase on next call
-
-        node_index = state["node_index"]
-        node = phase.time_nodes[node_index]
-
-        # Determine time bound for this time node
-        node.time_bound = phase.time_nodes[node_index + 1].t
-        phase.solver.t_bound = node.time_bound
-
-        if self.__is_lsoda:
-            phase.solver._lsoda_solver._integrator.rwork[0] = phase.solver.t_bound
-            phase.solver._lsoda_solver._integrator.call_args[4] = (
-                phase.solver._lsoda_solver._integrator.rwork
-            )
-
-        phase.solver.status = "running"
-
-        # Feed required parachute and discrete controller triggers
-        for callback in node.callbacks:
-            callback(self)
-
-        for controller in node._controllers:
-            controller(
-                self.t,
-                self.y_sol,
-                self.solution,
-                self.sensors,
-            )
-
-        while phase.solver.status == "running":
-            phase.solver.step()
-            self.solution += [[phase.solver.t, *phase.solver.y]]
-            self.function_evaluations.append(phase.solver.nfev)
-
-            self.t = phase.solver.t
-            self.y_sol = phase.solver.y
-            if self.verbose:
-                print(f"Current Simulation Time: {self.t:3.4f} s", end="\r")
-
-            # Check for first out of rail event
-            if len(self.out_of_rail_state) == 1 and (
-                self.y_sol[0] ** 2
-                + self.y_sol[1] ** 2
-                + (self.y_sol[2] - self.env.elevation) ** 2
-                >= self.effective_1rl**2
-            ):
-                self.solution[-2][3] -= self.env.elevation
-                self.solution[-1][3] -= self.env.elevation
-
-                y0 = sum(self.solution[-2][i] ** 2 for i in [1, 2, 3]) - (
-                    self.effective_1rl**2
-                )
-                yp0 = 2 * sum(
-                    self.solution[-2][i] * self.solution[-2][i + 3] for i in [1, 2, 3]
-                )
-                t1 = self.solution[-1][0] - self.solution[-2][0]
-                y1 = sum(self.solution[-1][i] ** 2 for i in [1, 2, 3]) - (
-                    self.effective_1rl**2
-                )
-                yp1 = 2 * sum(
-                    self.solution[-1][i] * self.solution[-1][i + 3] for i in [1, 2, 3]
-                )
-
-                self.solution[-2][3] += self.env.elevation
-                self.solution[-1][3] += self.env.elevation
-
-                a, b, c, d = calculate_cubic_hermite_coefficients(
-                    0,
-                    float(phase.solver.step_size),
-                    y0,
-                    yp0,
-                    y1,
-                    yp1,
-                )
-                a += 1e-5
-
-                t_roots = find_roots_cubic_function(a, b, c, d)
-                valid_t_root = [
-                    t_root.real
-                    for t_root in t_roots
-                    if 0 < t_root.real < t1 and abs(t_root.imag) < 0.001
-                ]
-
-                if len(valid_t_root) > 1:
-                    raise ValueError(
-                        "Multiple roots found when solving for rail exit time."
-                    )
-                if len(valid_t_root) == 0:
-                    raise ValueError(
-                        "No valid roots found when solving for rail exit time."
-                    )
-
-                self.t = valid_t_root[0] + self.solution[-2][0]
-                interpolator = phase.solver.dense_output()
-                self.y_sol = interpolator(self.t)
-                self.solution[-1] = [self.t, *self.y_sol]
-                self.out_of_rail_time = self.t
-                self.out_of_rail_time_index = len(self.solution) - 1
-                self.out_of_rail_state = self.y_sol
-
-                self.flight_phases.add_phase(
-                    self.t,
-                    self.u_dot_generalized,
-                    index=phase_index + 1,
-                )
-                phase.time_nodes.flush_after(node_index)
-                phase.time_nodes.add_node(self.t, [], [], [])
-                phase.solver.status = "finished"
-
-            # Check for impact event
-            if self.y_sol[2] < self.env.elevation:
-                # Check exactly when it happened using root finding
-                # Cubic Hermite interpolation (ax**3 + bx**2 + cx + d)
-                a, b, c, d = calculate_cubic_hermite_coefficients(
-                    x0=0,  # t0
-                    x1=float(phase.solver.step_size),  # t1 - t0
-                    y0=float(self.solution[-2][3] - self.env.elevation),  # z0
-                    yp0=float(self.solution[-2][6]),  # vz0
-                    y1=float(self.solution[-1][3] - self.env.elevation),  # z1
-                    yp1=float(self.solution[-1][6]),  # vz1
-                )
-                # Find roots
-                t_roots = find_roots_cubic_function(a, b, c, d)
-                # Find correct root
-                t1 = self.solution[-1][0] - self.solution[-2][0]
-                valid_t_root = [
-                    t_root.real
-                    for t_root in t_roots
-                    if abs(t_root.imag) < 0.001 and 0 < t_root.real < t1
-                ]
-                if len(valid_t_root) > 1:  # pragma: no cover
-                    raise ValueError(
-                        "Multiple roots found when solving for impact time."
-                    )
-                # Determine impact state at t_root
-                self.t = self.t_final = valid_t_root[0] + self.solution[-2][0]
-                interpolator = phase.solver.dense_output()
-                self.y_sol = self.impact_state = interpolator(self.t)
-                # Roll back solution
-                self.solution[-1] = [self.t, *self.y_sol]
-                # Save impact state
-                self.x_impact = self.impact_state[0]
-                self.y_impact = self.impact_state[1]
-                self.z_impact = self.impact_state[2]
-                self.impact_velocity = self.impact_state[5]
-                # Set last flight phase
-                self.flight_phases.flush_after(phase_index)
-                self.flight_phases.add_phase(self.t)
-                # Prepare to leave loops and start new flight phase
-                phase.time_nodes.flush_after(node_index)
-                phase.time_nodes.add_node(self.t, [], [], [])
-                phase.solver.status = "finished"
-
-            if self._controllers:
-                phase.derivative(self.t, self.y_sol, post_processing=True)
-
-        if self.sensors:
-            u_dot = phase.derivative(self.t, self.y_sol)
-            for sensor, position in node._component_sensors:
-                relative_position = position - self.rocket._csys * Vector(
-                    [0, 0, self.rocket.center_of_dry_mass_position]
-                )
-                sensor.measure(
-                    self.t,
-                    u=self.y_sol,
-                    u_dot=u_dot,
-                    relative_position=relative_position,
-                    environment=self.env,
-                    gravity=self.env.gravity.get_value_opt(self.solution[-1][3]),
-                    pressure=self.env.pressure,
-                    earth_radius=self.env.earth_radius,
-                    initial_coordinates=(self.env.latitude, self.env.longitude),
-                )
-
-        state["node_index"] += 1
 
     def __calculate_and_save_pressure_signals(self, parachute, t, z):
         """Gets noise and pressure signals and saves them in the parachute
