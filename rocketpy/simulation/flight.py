@@ -878,7 +878,6 @@ class Flight:
 
         # Initialize phase only once
         if not state["phase_initialized"]:
-            
             # Evaluate callbacks
             for callback in phase.callbacks:
                 callback(self)

@@ -1829,6 +1829,7 @@ class Rocket:
     def add_tvc(
         self,
         gimbal_range,
+        gimbal_rate_limit,
         controller_function,
         sampling_rate,
         clamp=True,
@@ -1846,7 +1847,10 @@ class Rocket:
         gimbal_range : int, float
             Maximum gimbal range in degrees. Both x and y gimbal
             angles are clamped to this range if clamp is True. Must be
-            positive.
+            non-negative.
+        gimbal_rate_limit : int, float
+            Maximum gimbal rate in degrees per second. Both x and y gimbal
+            angles are limited to this rate of change. Must be non-negative.
         controller_function : function, callable
             An user-defined function responsible for controlling the TVC system.
             This function is expected to take the following arguments, in order:
@@ -1924,7 +1928,9 @@ class Rocket:
             ]
 
         tvc = TVC(
+            sampling_rate=sampling_rate,
             gimbal_range=gimbal_range,
+            gimbal_rate_limit=gimbal_rate_limit,
             clamp=clamp,
             gimbal_angle_x=0,
             gimbal_angle_y=0,
@@ -1947,6 +1953,7 @@ class Rocket:
     def add_roll_control(
         self,
         max_roll_torque,
+        torque_rate_limit,
         controller_function,
         sampling_rate,
         clamp=True,
@@ -1962,6 +1969,8 @@ class Rocket:
         ----------
         max_roll_torque : int, float
             Maximum roll torque magnitude in N·m. Must be non-negative.
+        torque_rate_limit : int, float
+            Maximum rate of change of roll torque in N·m/s. Must be non-negative.
         controller_function : function, callable
             An user-defined function responsible for controlling the roll control
             system. This function is expected to take the following arguments, in
@@ -2043,7 +2052,9 @@ class Rocket:
             ]
 
         roll_control = RollControl(
+            sampling_rate=sampling_rate,
             max_roll_torque=max_roll_torque,
+            torque_rate_limit=torque_rate_limit,
             clamp=clamp,
             roll_torque=0,
             name=name,

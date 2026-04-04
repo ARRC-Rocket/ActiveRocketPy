@@ -29,7 +29,9 @@ class RollControl:
 
     def __init__(
         self,
+        sampling_rate=100,
         max_roll_torque=0,
+        torque_rate_limit=0,
         clamp=True,
         roll_torque=0.0,
         name="Roll Control",
@@ -38,9 +40,14 @@ class RollControl:
 
         Parameters
         ----------
+        sampling_rate : int, optional
+            Sampling rate of the roll control system in Hz. Default is 100 Hz.
         max_roll_torque : float, int
             Maximum roll torque magnitude in N·m. Must be non-negative.
             Default is 0 (no roll control).
+        torque_rate_limit : float, int
+            Maximum roll torque rate in N·m/s. Roll torque is limited to this
+            rate. Must be non-negative. Default is 0 (no torque change).
         clamp : bool, optional
             If True, the simulation will clamp roll torque to the range
             [-max_roll_torque, max_roll_torque] if it exceeds this range.
@@ -56,10 +63,14 @@ class RollControl:
         None
         """
         self.name = name
+        self.sampling_rate = sampling_rate
         assert max_roll_torque >= 0, "max_roll_torque must be non-negative."
         self.max_roll_torque = max_roll_torque
+        assert torque_rate_limit >= 0, "torque_rate_limit must be non-negative."
+        self.torque_rate_limit = torque_rate_limit
         self.clamp = clamp
         self.initial_roll_torque = roll_torque
+        self.roll_torque_prev = roll_torque
         self.roll_torque = roll_torque
         self.prints = _RollControlPrints(self)
 
@@ -86,6 +97,12 @@ class RollControl:
                     f"which exceeds the maximum of {self.max_roll_torque:.4f} N·m.",
                     UserWarning,
                 )
+        # Limit the roll torque rate
+        max_torque_change = self.torque_rate_limit / self.sampling_rate
+        torque_change = value - self.roll_torque_prev
+        if abs(torque_change) > max_torque_change:
+            value = self.roll_torque_prev + np.sign(torque_change) * max_torque_change
+        self.roll_torque_prev = value
         self._roll_torque = value
 
     def _reset(self):
@@ -93,6 +110,7 @@ class RollControl:
         is called at the beginning of each simulation to ensure the roll
         control system is in the correct state."""
         self.roll_torque = self.initial_roll_torque
+        self.roll_torque_prev = self.initial_roll_torque
 
     def info(self):
         """Prints summarized information of the roll control system.
@@ -114,7 +132,9 @@ class RollControl:
 
     def to_dict(self, **kwargs):  # pylint: disable=unused-argument
         return {
+            "sampling_rate": self.sampling_rate,
             "max_roll_torque": self.max_roll_torque,
+            "torque_rate_limit": self.torque_rate_limit,
             "clamp": self.clamp,
             "roll_torque": self.initial_roll_torque,
             "name": self.name,
@@ -123,7 +143,9 @@ class RollControl:
     @classmethod
     def from_dict(cls, data):
         return cls(
+            sampling_rate=data.get("sampling_rate"),
             max_roll_torque=data.get("max_roll_torque"),
+            torque_rate_limit=data.get("torque_rate_limit"),
             clamp=data.get("clamp"),
             roll_torque=data.get("roll_torque"),
             name=data.get("name"),
