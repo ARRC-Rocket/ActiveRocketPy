@@ -1516,29 +1516,27 @@ class Flight:
                 1.0,
             )
             effective_thrust = net_thrust * throttle
-            
+
             # TVC (Thrust Vector Control)
             if hasattr(self.rocket, "tvc"):
-                # TVC Fz thrust: F = T * sqrt(1 - sin(gimbal_angle_x)**2 - sin(gimbal_angle_y)**2)
-                thrust3 = net_thrust * np.sqrt(
+                thrust3 = effective_thrust * np.sqrt(
                     1
                     - np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180)) ** 2
                     - np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180)) ** 2
                 )
                 tvc_lever = self.rocket.nozzle_to_cdm
-                # TVC Mx My moments: M = T * sin(x) * r
                 M1 += (
                     np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180))
-                    * net_thrust
+                    * effective_thrust
                     * tvc_lever
                 )
                 M2 += (
                     np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180))
-                    * net_thrust
+                    * effective_thrust
                     * tvc_lever
                 )
             else:
-                thrust3 = net_thrust
+                thrust3 = effective_thrust
             # Off center moment
             M1 += self.rocket.thrust_eccentricity_y * thrust3
             M2 -= self.rocket.thrust_eccentricity_x * thrust3

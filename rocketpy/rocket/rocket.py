@@ -25,7 +25,7 @@ from rocketpy.rocket.components import Components
 from rocketpy.rocket.parachute import Parachute
 from rocketpy.rocket.roll_control import RollControl
 from rocketpy.rocket.tvc import TVC
-from rocketpy.rocket.throttle_control import throttle_control
+from rocketpy.rocket.throttle_control import ThrottleControl
 from rocketpy.tools import (
     deprecated,
     find_obj_from_hash,
