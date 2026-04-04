@@ -25,6 +25,7 @@ from rocketpy.rocket.components import Components
 from rocketpy.rocket.parachute import Parachute
 from rocketpy.rocket.roll_control import RollControl
 from rocketpy.rocket.tvc import TVC
+from rocketpy.rocket.throttle_control import throttle_control
 from rocketpy.tools import (
     deprecated,
     find_obj_from_hash,
@@ -1841,6 +1842,56 @@ class Rocket:
             return tvc, _controller
         else:
             return tvc
+    
+    def add_throttle_control(
+        self,
+        controller_function,
+        sampling_rate,
+        min_throttle=0.0,
+        max_throttle=1.0,
+        initial_throttle=1.0,
+        clamp=True,
+        initial_observed_variables=None,
+        return_controller=False,
+        name="Throttle Control",
+        controller_name="Throttle Controller",
+    ):
+        """Creates a new throttle control system."""
+
+        if hasattr(self, "throttle_control"):
+            print(
+                "Only one throttle control per rocket is currently supported. "
+                + "Overwriting previous throttle control and controllers."
+            )
+            self._controllers = [
+                controller
+                for controller in self._controllers
+                if not isinstance(controller.interactive_objects, ThrottleControl)
+            ]
+
+        throttle_control = ThrottleControl(
+            min_throttle=min_throttle,
+            max_throttle=max_throttle,
+            initial_throttle=initial_throttle,
+            clamp=clamp,
+            name=name,
+        )
+
+        _controller = _Controller(
+            interactive_objects=throttle_control,
+            controller_function=controller_function,
+            sampling_rate=sampling_rate,
+            initial_observed_variables=initial_observed_variables,
+            name=controller_name,
+        )
+
+        self.throttle_control = throttle_control
+        self._add_controllers(_controller)
+
+        if return_controller:
+            return throttle_control, _controller
+        else:
+            return throttle_control
 
     def add_roll_control(
         self,

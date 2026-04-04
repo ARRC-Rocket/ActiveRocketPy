@@ -1965,6 +1965,11 @@ class Flight:
             )
         else:
             thrust3 = net_thrust
+
+        #Throttle Control
+        "throttle = self.rocket.throttle_control.throttle"
+        "effective_thrust = net_thrust * throttle"
+
         # Off center moment
         M1 += (
             self.rocket.cp_eccentricity_y * R3
