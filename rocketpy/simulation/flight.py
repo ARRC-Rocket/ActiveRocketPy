@@ -966,7 +966,7 @@ class Flight:
             if self._controllers:
                 phase.derivative(self.t, self.y_sol, post_processing=True)
 
-        if self.sensors:
+        if node._component_sensors:
             u_dot = phase.derivative(self.t, self.y_sol)
             self.__measure_sensors(node._component_sensors, u_dot)
 
@@ -1014,7 +1014,7 @@ class Flight:
         phase : FlightPhase
             The current flight phase.
         """
-        if self.sensors:
+        if node._component_sensors:
             u_dot = phase.derivative(self.t, self.y_sol)
             self.__measure_sensors(node._component_sensors, u_dot)
 
