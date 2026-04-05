@@ -21,9 +21,8 @@ classifiers = [
 [project.urls]
 homepage = "https://rocketpy.org/"
 documentation = "https://docs.rocketpy.org/"
-repository = "https://github.com/RocketPy-Team/RocketPy"
-issues = "https://github.com/RocketPy-Team/RocketPy/issues"
-changelog = "https://github.com/RocketPy-Team/RocketPy/blob/master/CHANGELOG.md"
+repository = "https://github.com/ARRC-Rocket/ActiveRocketPy"
+issues = "https://github.com/ARRC-Rocket/ActiveRocketPy/issues"
 
 
 [build-system]
@@ -68,7 +67,7 @@ monte-carlo = [
     "contextily>=1.0.0; python_version < '3.14'",
 ]
 
-all = ["rocketpy[env-analysis]", "rocketpy[monte-carlo]"]
+all = ["activerocketpy[env-analysis]", "activerocketpy[monte-carlo]"]
 
 
 [tool.coverage.report]
