@@ -2061,12 +2061,14 @@ class Flight:
 
             # TVC (Thrust Vector Control)
             if hasattr(self.rocket, "tvc"):
+                # TVC Fz thrust: F = T * sqrt(1 - sin(gimbal_angle_x)**2 - sin(gimbal_angle_y)**2)
                 thrust3 = effective_thrust * np.sqrt(
                     1
                     - np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180)) ** 2
                     - np.sin(self.rocket.tvc.gimbal_angle_y * (np.pi / 180)) ** 2
                 )
                 tvc_lever = self.rocket.nozzle_to_cdm
+                # TVC Mx My moments: M = T * sin(x) * r
                 M1 += (
                     np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180))
                     * effective_thrust
@@ -2784,6 +2786,7 @@ class Flight:
         # TVC (Thrust Vector Control)
         if hasattr(self.rocket, "tvc"):
             tvc_lever = self.rocket.nozzle_to_cdm
+            # TVC Mx My moments: M = T * sin(x) * r
             M1 += (
                 np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180))
                 * effective_thrust
@@ -2794,6 +2797,7 @@ class Flight:
                 * effective_thrust
                 * tvc_lever
             )
+            # TVC Fz thrust: F = T * sqrt(1 - sin^2(x) - sin^2(y))
             thrust3 = effective_thrust * np.sqrt(
                 1
                 - np.sin(self.rocket.tvc.gimbal_angle_x * (np.pi / 180)) ** 2
