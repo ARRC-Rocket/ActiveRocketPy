@@ -5,17 +5,14 @@ from ..prints.throttle_control_prints import _ThrottleControlPrints
 class ThrottleControl:
     def __init__(
         self,
-        min_throttle=0.0,
-        max_throttle=1.0,
+        throttle_range=(0.0, 1.0),
         initial_throttle=1.0,
         clamp=True,
         name="Throttle Control",
     ):
-        if min_throttle > max_throttle:
-            raise ValueError("min_throttle must be <= max_throttle")
-
-        self.min_throttle = float(min_throttle)
-        self.max_throttle = float(max_throttle)
+        if throttle_range[0] > throttle_range[1]:
+            raise ValueError("throttle_range[0] must be <= throttle_range[1]")
+        self.throttle_range = throttle_range
         self.initial_throttle = float(initial_throttle)
         self.clamp = clamp
         self.name = name
@@ -31,14 +28,14 @@ class ThrottleControl:
     def throttle(self, value):
         value = float(value)
 
-        if value < self.min_throttle or value > self.max_throttle:
+        if value < self.throttle_range[0] or value > self.throttle_range[1]:
             if self.clamp:
-                value = np.clip(value, self.min_throttle, self.max_throttle)
+                value = np.clip(value, self.throttle_range[0], self.throttle_range[1])
             else:
                 warnings.warn(
                     f"Throttle of {self.name} is {value:.4f}, "
                     f"which exceeds bounds "
-                    f"[{self.min_throttle:.4f}, {self.max_throttle:.4f}].",
+                    f"[{self.throttle_range[0]:.4f}, {self.throttle_range[1]:.4f}].",
                     UserWarning,
                 )
 
@@ -52,5 +49,5 @@ class ThrottleControl:
             f"<ThrottleControl("
             f"name={self.name}, "
             f"throttle={self.throttle:.3f}, "
-            f"range=[{self.min_throttle:.3f}, {self.max_throttle:.3f}])>"
+            f"range=[{self.throttle_range[0]:.3f}, {self.throttle_range[1]:.3f}])>"
         )

@@ -1847,8 +1847,7 @@ class Rocket:
         self,
         controller_function,
         sampling_rate,
-        min_throttle=0.0,
-        max_throttle=1.0,
+        throttle_range=(0, 1),
         initial_throttle=1.0,
         clamp=True,
         initial_observed_variables=None,
@@ -1900,18 +1899,15 @@ class Rocket:
             The sampling rate of the controller function in Hertz (Hz). This
             means that the controller function will be called every
             `1/sampling_rate` seconds.
-        min_throttle : float, optional
-            Minimum throttle value. Must be in the range [0, 1] where 0 represents
-            no thrust. Default is 0.0.
-        max_throttle : float, optional
-            Maximum throttle value. Must be in the range [0, 1] where 1 represents
-            full thrust. Default is 1.0.
+        throttle_range : tuple, optional
+            A tuple containing the minimum and maximum throttle values. Must be in the range [0, 1]. Default is (0.0, 1.0).
+
         initial_throttle : float, optional
             Initial throttle value at the start of the simulation. Must be within
-            the range [min_throttle, max_throttle]. Default is 1.0.
+            the range [throttle_range[0], throttle_range[1]]. Default is 1.0.
         clamp : bool, optional
             If True, the simulation will clamp throttle values to the range
-            [min_throttle, max_throttle]. If False, a warning is issued when
+            [throttle_range[0], throttle_range[1]]. If False, a warning is issued when
             throttle values exceed the range. Default is True.
         initial_observed_variables : list, optional
             A list of the initial values of the variables that the controller
@@ -1950,8 +1946,7 @@ class Rocket:
             ]
 
         throttle_control = ThrottleControl(
-            min_throttle=min_throttle,
-            max_throttle=max_throttle,
+            throttle_range=throttle_range,
             initial_throttle=initial_throttle,
             clamp=clamp,
             name=name,
