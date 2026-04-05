@@ -1805,7 +1805,7 @@ class Flight:
                     M1,
                     M2,
                     M3,
-                    net_thrust,
+                    effective_thrust,
                 ]
             )
 
@@ -2050,7 +2050,7 @@ class Flight:
 
         if post_processing:
             self.__post_processed_variables.append(
-                [t, *v_dot, *w_dot, R1, R2, R3, M1, M2, M3, net_thrust]
+                [t, *v_dot, *w_dot, R1, R2, R3, M1, M2, M3, effective_thrust]
             )
 
         return u_dot
