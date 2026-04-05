@@ -2081,6 +2081,7 @@ class Rocket:
         throttle_range=(0, 1),
         initial_throttle=1.0,
         clamp=True,
+        throttle_rate_limit=0,
         initial_observed_variables=None,
         return_controller=False,
         name="Throttle Control",
@@ -2140,6 +2141,9 @@ class Rocket:
             If True, the simulation will clamp throttle values to the range
             [throttle_range[0], throttle_range[1]]. If False, a warning is issued when
             throttle values exceed the range. Default is True.
+        throttle_rate_limit : float, optional
+            Maximum throttle rate in 1/s. Throttle is limited to this rate.
+            Must be non-negative. Default is 0 (no throttle change limit).
         initial_observed_variables : list, optional
             A list of the initial values of the variables that the controller
             function manages. This list is used to initialize the
@@ -2180,6 +2184,8 @@ class Rocket:
             throttle_range=throttle_range,
             initial_throttle=initial_throttle,
             clamp=clamp,
+            sampling_rate=sampling_rate,
+            throttle_rate_limit=throttle_rate_limit,
             name=name,
         )
 
