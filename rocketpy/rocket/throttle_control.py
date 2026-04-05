@@ -1,6 +1,9 @@
 import warnings
+
 import numpy as np
+
 from ..prints.throttle_control_prints import _ThrottleControlPrints
+
 
 class ThrottleControl:
     def __init__(
