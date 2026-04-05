@@ -6,11 +6,12 @@ from ..prints.tvc_prints import _TVCPrints
 
 
 class TVC:
-    """Thrust Vector Control (TVC) system class. Inherits from AeroSurface.
+    """Thrust Vector Control (TVC) system class used as a controllable component.
 
     This class represents a thrust vector control system that allows deflection
     of the thrust vector through gimbal angles. TVC is typically controlled
-    by a controller function similar to air brakes.
+    by a controller function similar to air brakes and is used by ``Flight``
+    to model thrust vectoring behavior.
 
     Attributes
     ----------
@@ -32,7 +33,9 @@ class TVC:
 
     def __init__(
         self,
+        sampling_rate=100,
         gimbal_range=0,
+        gimbal_rate_limit=0,
         clamp=True,
         gimbal_angle_x=0.0,
         gimbal_angle_y=0.0,
@@ -42,10 +45,16 @@ class TVC:
 
         Parameters
         ----------
+        sampling_rate : int, optional
+            Sampling rate of the TVC controller in Hz. Default is 100 Hz.
         gimbal_range : int, float
             Maximum gimbal angle magnitude in degrees. Both x and y gimbal
             angles are clamped to this value if clamp is True. Must be
-            positive.
+            non-negative. Default is 0 (no deflection).
+        gimbal_rate_limit : int, float, optional
+            Maximum gimbal rate in degrees per second. Both x and y gimbal
+            rates are limited to this value. Must be non-negative.
+            Default is 0 (no movement).
         clamp : bool, optional
             If True, the simulation will clamp gimbal angles to the range
             [-gimbal_range, gimbal_range] if they exceed this range.
@@ -65,10 +74,16 @@ class TVC:
         None
         """
         self.name = name
+        self.sampling_rate = sampling_rate
+        assert gimbal_range >= 0, "gimbal_range must be non-negative."
         self.gimbal_range = gimbal_range
+        assert gimbal_rate_limit >= 0, "gimbal_rate_limit must be non-negative."
+        self.gimbal_rate_limit = gimbal_rate_limit
         self.clamp = clamp
         self.initial_gimbal_angle_x = gimbal_angle_x
         self.initial_gimbal_angle_y = gimbal_angle_y
+        self.gimbal_angle_x_prev = gimbal_angle_x
+        self.gimbal_angle_y_prev = gimbal_angle_y
         self.gimbal_angle_x = gimbal_angle_x
         self.gimbal_angle_y = gimbal_angle_y
         self.prints = _TVCPrints(self)
@@ -90,6 +105,12 @@ class TVC:
                     f"which exceeds the maximum of {self.gimbal_range:.4f} deg.",
                     UserWarning,
                 )
+        # Limit the gimbal rate
+        max_angle_change = self.gimbal_rate_limit / self.sampling_rate
+        angle_change = value - self.gimbal_angle_x_prev
+        if abs(angle_change) > max_angle_change:
+            value = self.gimbal_angle_x_prev + np.sign(angle_change) * max_angle_change
+        self.gimbal_angle_x_prev = value
         self._gimbal_angle_x = value
 
     @property
@@ -109,6 +130,12 @@ class TVC:
                     f"which exceeds the maximum of {self.gimbal_range:.4f} deg.",
                     UserWarning,
                 )
+        # Limit the gimbal rate
+        max_angle_change = self.gimbal_rate_limit / self.sampling_rate
+        angle_change = value - self.gimbal_angle_y_prev
+        if abs(angle_change) > max_angle_change:
+            value = self.gimbal_angle_y_prev + np.sign(angle_change) * max_angle_change
+        self.gimbal_angle_y_prev = value
         self._gimbal_angle_y = value
 
     @property
@@ -134,6 +161,8 @@ class TVC:
         the correct state."""
         self.gimbal_angle_x = self.initial_gimbal_angle_x
         self.gimbal_angle_y = self.initial_gimbal_angle_y
+        self.gimbal_angle_x_prev = self.initial_gimbal_angle_x
+        self.gimbal_angle_y_prev = self.initial_gimbal_angle_y
 
     def info(self):
         """Prints summarized information of the TVC system.
@@ -155,7 +184,9 @@ class TVC:
 
     def to_dict(self, **kwargs):  # pylint: disable=unused-argument
         return {
+            "sampling_rate": self.sampling_rate,
             "gimbal_range": self.gimbal_range,
+            "gimbal_rate_limit": self.gimbal_rate_limit,
             "clamp": self.clamp,
             "gimbal_angle_x": self.initial_gimbal_angle_x,
             "gimbal_angle_y": self.initial_gimbal_angle_y,
@@ -165,7 +196,9 @@ class TVC:
     @classmethod
     def from_dict(cls, data):
         return cls(
+            sampling_rate=data.get("sampling_rate"),
             gimbal_range=data.get("gimbal_range"),
+            gimbal_rate_limit=data.get("gimbal_rate_limit"),
             clamp=data.get("clamp"),
             gimbal_angle_x=data.get("gimbal_angle_x"),
             gimbal_angle_y=data.get("gimbal_angle_y"),

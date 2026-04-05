@@ -1,3 +1,5 @@
+import csv
+import inspect
 import math
 import warnings
 from typing import Iterable
@@ -150,10 +152,26 @@ class Rocket:
         loaded with propellant in units of rocket diameter or calibers.
     Rocket.power_off_drag : Function
         Rocket's drag coefficient as a function of Mach number when the
-        motor is off.
+        motor is off. Alias for ``power_off_drag_by_mach``.
     Rocket.power_on_drag : Function
         Rocket's drag coefficient as a function of Mach number when the
-        motor is on.
+        motor is on. Alias for ``power_on_drag_by_mach``.
+    Rocket.power_off_drag_input : int, float, callable, string, array, Function
+        Original user input for rocket's drag coefficient when the motor is
+        off. Preserved for reconstruction and Monte Carlo workflows.
+    Rocket.power_on_drag_input : int, float, callable, string, array, Function
+        Original user input for rocket's drag coefficient when the motor is
+        on. Preserved for reconstruction and Monte Carlo workflows.
+    Rocket.power_off_drag_7d : Function
+        Rocket's drag coefficient with motor off as a 7D function of
+        (alpha, beta, mach, reynolds, pitch_rate, yaw_rate, roll_rate).
+    Rocket.power_on_drag_7d : Function
+        Rocket's drag coefficient with motor on as a 7D function of
+        (alpha, beta, mach, reynolds, pitch_rate, yaw_rate, roll_rate).
+    Rocket.power_off_drag_by_mach : Function
+        Rocket's drag coefficient with motor off as a function of Mach number.
+    Rocket.power_on_drag_by_mach : Function
+        Rocket's drag coefficient with motor on as a function of Mach number.
     Rocket.rail_buttons : RailButtons
         RailButtons object containing the rail buttons information.
     Rocket.motor : Motor
@@ -210,6 +228,8 @@ class Rocket:
         Rocket's inertia tensor 13 component with unloaded motor,in kg*m^2.
     Rocket.dry_I_23 : float
         Rocket's inertia tensor 23 component with unloaded motor,in kg*m^2.
+    Rocket.volume : float
+        Rocket's total volume in m³.
     """
 
     def __init__(  # pylint: disable=too-many-statements
@@ -221,6 +241,7 @@ class Rocket:
         power_on_drag,
         center_of_mass_without_motor,
         coordinate_system_orientation="tail_to_nose",
+        volume=None,
     ):
         """Initializes Rocket class, process inertial, geometrical and
         aerodynamic parameters.
@@ -243,6 +264,10 @@ class Rocket:
             in the direction of e_i x e_j. Alternatively, the inertia tensor can
             be given as (I_11, I_22, I_33), where I_12 = I_13 = I_23 = 0. This
             can also be called as "rocket dry inertia tensor".
+        volume : int, float
+            Rocket's total volume in m³. This can be used for buoyancy calculations.
+            It can also be set to 0 if buoyancy is not being considered.
+            Use None to let the program calculate the volume based on the added components.
         power_off_drag : int, float, callable, string, array
             Rocket's drag coefficient when the motor is off. Can be given as an
             entry to the Function class. See help(Function) for more
@@ -282,15 +307,16 @@ class Rocket:
         """
         # Define coordinate system orientation
         self.coordinate_system_orientation = coordinate_system_orientation
-        if coordinate_system_orientation == "tail_to_nose":
-            self._csys = 1
-        elif coordinate_system_orientation == "nose_to_tail":
-            self._csys = -1
-        else:  # pragma: no cover
-            raise TypeError(
-                "Invalid coordinate system orientation. Please choose between "
-                + '"tail_to_nose" and "nose_to_tail".'
-            )
+        match coordinate_system_orientation:
+            case "tail_to_nose":
+                self._csys = 1
+            case "nose_to_tail":
+                self._csys = -1
+            case _:  # pragma: no cover
+                raise TypeError(
+                    "Invalid coordinate system orientation. Please choose between "
+                    + '"tail_to_nose" and "nose_to_tail".'
+                )
 
         # Define rocket inertia attributes in SI units
         self.mass = mass
@@ -344,20 +370,33 @@ class Rocket:
         )
 
         # Define aerodynamic drag coefficients
-        self.power_off_drag = Function(
-            power_off_drag,
-            "Mach Number",
-            "Drag Coefficient with Power Off",
-            "linear",
-            "constant",
+        # Coefficients used during flight simulation
+        self.power_off_drag_7d = self.__process_drag_input(
+            power_off_drag, "Drag Coefficient with Power Off"
         )
-        self.power_on_drag = Function(
-            power_on_drag,
-            "Mach Number",
-            "Drag Coefficient with Power On",
-            "linear",
-            "constant",
+        self.power_on_drag_7d = self.__process_drag_input(
+            power_on_drag, "Drag Coefficient with Power On"
         )
+        self.power_on_drag_by_mach = Function(
+            lambda mach: self.power_on_drag_7d(0, 0, mach, 0, 0, 0, 0),
+            inputs="Mach Number",
+            outputs="Drag Coefficient with Power On",
+            interpolation="linear",
+            extrapolation="constant",
+        )
+        self.power_off_drag_by_mach = Function(
+            lambda mach: self.power_off_drag_7d(0, 0, mach, 0, 0, 0, 0),
+            inputs="Mach Number",
+            outputs="Drag Coefficient with Power Off",
+            interpolation="linear",
+            extrapolation="constant",
+        )
+        # Saving raw user input for reconstruction and Monte Carlo
+        self._power_off_drag_input = power_off_drag
+        self._power_on_drag_input = power_on_drag
+        # Public API attributes: keep as Function (Mach-only) for backward compatibility
+        self.power_off_drag = self.power_off_drag_by_mach
+        self.power_on_drag = self.power_on_drag_by_mach
 
         # Create a, possibly, temporary empty motor
         # self.motors = Components()  # currently unused, only 1 motor is supported
@@ -378,6 +417,14 @@ class Rocket:
         self.evaluate_reduced_mass()
         self.evaluate_thrust_to_weight()
 
+        if volume is None:
+            # calculate volume properties for buoyancy
+            self.evaluate_volume()
+        else:
+            # Volume and buoyancy properties
+            assert volume >= 0, "Volume must be non-negative"
+            self.volume = volume
+
         # Evaluate stability (even though no aerodynamic surfaces are present yet)
         self.evaluate_center_of_pressure()
         self.evaluate_stability_margin()
@@ -386,6 +433,35 @@ class Rocket:
         # Initialize plots and prints object
         self.prints = _RocketPrints(self)
         self.plots = _RocketPlots(self)
+
+    def _check_missing_components(self):
+        """Check if the rocket is missing any essential components and issue a warning.
+
+        This method verifies whether the rocket has the following key components:
+        - motor
+        - aerodynamic surface(s)
+
+        If any of these components are missing, a single warning message is issued
+        listing all missing components. This helps users quickly identify potential
+        issues before running simulations or analyses.
+
+        Notes
+        -----
+        - The warning uses Python's built-in `warnings.warn` function.
+
+        Returns
+        -------
+        None
+        """
+        missing_components = []
+        if isinstance(self.motor, EmptyMotor):
+            missing_components.append("motor")
+        if not self.aerodynamic_surfaces:
+            missing_components.append("aerodynamic surfaces")
+
+        if missing_components:
+            component_list = ", ".join(missing_components)
+            warnings.warn(f"Rocket has no {component_list} defined.", UserWarning)
 
     @property
     def nosecones(self):
@@ -668,6 +744,19 @@ class Rocket:
             lower=0, upper=self.motor.burn_out_time, samples=200
         )
         return self.static_margin
+
+    def evaluate_volume(self):
+        """Calculates the total volume of the rocket including the motor.
+
+        Returns
+        -------
+        self.volume : float
+            Total volume of the rocket in m³.
+        """
+        # TODO: calculate volume from radius and surface locations
+        self.volume = 0
+
+        return self.volume
 
     def evaluate_dry_inertias(self):
         """Calculates and returns the rocket's dry inertias relative to
@@ -1453,9 +1542,10 @@ class Rocket:
         sampling_rate=100,
         lag=0,
         noise=(0, 0, 0),
-        radius=1.5,
+        radius=None,
         height=None,
         porosity=0.0432,
+        drag_coefficient=1.4,
     ):
         """Creates a new parachute, storing its parameters such as
         opening delay, drag coefficients and trigger function.
@@ -1515,26 +1605,34 @@ class Rocket:
             passed to the trigger function. Default value is (0, 0, 0). Units
             are in pascal.
         radius : float, optional
-            Length of the non-unique semi-axis (radius) of the inflated hemispheroid
-            parachute. Default value is 1.5.
+            Length of the non-unique semi-axis (radius) of the inflated
+            hemispheroid parachute. If not provided, it is estimated from
+            `cd_s` and `drag_coefficient` using:
+            `radius = sqrt(cd_s / (drag_coefficient * pi))`.
             Units are in meters.
         height : float, optional
             Length of the unique semi-axis (height) of the inflated hemispheroid
             parachute. Default value is the radius of the parachute.
             Units are in meters.
         porosity : float, optional
-            Geometric porosity of the canopy (ratio of open area to total canopy area),
-            in [0, 1]. Affects only the added-mass scaling during descent; it does
-            not change ``cd_s`` (drag). The default, 0.0432, yields an added-mass
-            of 1.0 (“neutral” behavior).
+            Geometric porosity of the canopy (ratio of open area to total
+            canopy area), in [0, 1]. Affects only the added-mass scaling
+            during descent; it does not change `cd_s` (drag). The default
+            value of 0.0432 yields an `added_mass_coefficient` of
+            approximately 1.0 ("neutral" added-mass behavior).
+        drag_coefficient : float, optional
+            Drag coefficient of the inflated canopy shape, used only when
+            `radius` is not provided. Typical values: 1.4 for hemispherical
+            canopies (default), 0.75 for flat circular canopies, 1.5 for
+            extended-skirt canopies. Has no effect when `radius` is given.
 
         Returns
         -------
         parachute : Parachute
-            Parachute containing trigger, sampling_rate, lag, cd_s, noise, radius,
-            height, porosity and name. Furthermore, it stores clean_pressure_signal,
-            noise_signal and noisyPressureSignal which are filled in during
-            Flight simulation.
+            Parachute containing trigger, sampling_rate, lag, cd_s, noise,
+            radius, drag_coefficient, height, porosity and name. Furthermore,
+            it stores clean_pressure_signal, noise_signal and
+            noisyPressureSignal which are filled in during Flight simulation.
         """
         parachute = Parachute(
             name,
@@ -1546,6 +1644,7 @@ class Rocket:
             radius,
             height,
             porosity,
+            drag_coefficient,
         )
         self.parachutes.append(parachute)
         return self.parachutes[-1]
@@ -1645,12 +1744,15 @@ class Rocket:
             6. `interactive_objects` (list): A list containing the objects that
                the controller function can interact with. The objects are
                listed in the same order as they are provided in the
-               `interactive_objects`
+               `interactive_objects` argument.
             7. `sensors` (list): A list of sensors that are attached to the
                 rocket. The most recent measurements of the sensors are provided
                 with the ``sensor.measurement`` attribute. The sensors are
-                listed in the same order as they are added to the rocket
-               ``interactive_objects``
+                listed in the same order as they are added to the rocket.
+            8. `environment` (Environment): The environment object containing
+                atmospheric conditions, wind data, gravity, and other
+                environmental parameters. This allows the controller to access
+                environmental data locally without relying on global variables.
 
             This function will be called during the simulation at the specified
             sampling rate. The function should evaluate and change the observed
@@ -1728,6 +1830,7 @@ class Rocket:
     def add_tvc(
         self,
         gimbal_range,
+        gimbal_rate_limit,
         controller_function,
         sampling_rate,
         clamp=True,
@@ -1745,7 +1848,10 @@ class Rocket:
         gimbal_range : int, float
             Maximum gimbal range in degrees. Both x and y gimbal
             angles are clamped to this range if clamp is True. Must be
-            positive.
+            non-negative.
+        gimbal_rate_limit : int, float
+            Maximum gimbal rate in degrees per second. Both x and y gimbal
+            angles are limited to this rate of change. Must be non-negative.
         controller_function : function, callable
             An user-defined function responsible for controlling the TVC system.
             This function is expected to take the following arguments, in order:
@@ -1823,7 +1929,9 @@ class Rocket:
             ]
 
         tvc = TVC(
+            sampling_rate=sampling_rate,
             gimbal_range=gimbal_range,
+            gimbal_rate_limit=gimbal_rate_limit,
             clamp=clamp,
             gimbal_angle_x=0,
             gimbal_angle_y=0,
@@ -1842,7 +1950,130 @@ class Rocket:
             return tvc, _controller
         else:
             return tvc
-    
+
+    def add_roll_control(
+        self,
+        max_roll_torque,
+        torque_rate_limit,
+        controller_function,
+        sampling_rate,
+        clamp=True,
+        initial_observed_variables=None,
+        return_controller=False,
+        name="Roll Control",
+        controller_name="Roll Control Controller",
+    ):
+        """Creates a new roll control system, storing its parameters such as
+        maximum roll torque, controller function, and sampling rate.
+
+        Parameters
+        ----------
+        max_roll_torque : int, float
+            Maximum roll torque magnitude in N·m. Must be non-negative.
+        torque_rate_limit : int, float
+            Maximum rate of change of roll torque in N·m/s. Must be non-negative.
+        controller_function : function, callable
+            An user-defined function responsible for controlling the roll control
+            system. This function is expected to take the following arguments, in
+            order:
+
+            1. `time` (float): The current simulation time in seconds.
+            2. `sampling_rate` (float): The rate at which the controller
+               function is called, measured in Hertz (Hz).
+            3. `state` (list): The state vector of the simulation, structured as
+               `[x, y, z, vx, vy, vz, e0, e1, e2, e3, wx, wy, wz]`.
+            4. `state_history` (list): A record of the rocket's state at each
+               step throughout the simulation. The state_history is organized as a
+               list of lists, with each sublist containing a state vector. The last
+               item in the list always corresponds to the previous state vector,
+               providing a chronological sequence of the rocket's evolving states.
+            5. `observed_variables` (list): A list containing the variables that
+               the controller function manages. The initial values in the first
+               step of the simulation are provided by the
+               `initial_observed_variables` argument.
+            6. `interactive_objects` (list): A list containing the roll control
+               object that the controller function can interact with.
+            7. `sensors` (list): A list of sensors that are attached to the
+                rocket. The most recent measurements of the sensors are provided
+                with the ``sensor.measurement`` attribute. The sensors are
+                listed in the same order as they are added to the rocket
+               `interactive_objects`
+
+            This function will be called during the simulation at the specified
+            sampling rate. The function should evaluate and change the observed
+            objects as needed. The function should return None.
+
+            .. note::
+
+                The function will be called according to the sampling rate
+                specified.
+
+        sampling_rate : float
+            The sampling rate of the controller function in Hertz (Hz). This
+            means that the controller function will be called every
+            `1/sampling_rate` seconds.
+        clamp : bool, optional
+            If True, the simulation will clamp roll torque to the range
+            [-max_roll_torque, max_roll_torque]. If False, a warning is
+            issued when roll torque exceeds the range. Default is True.
+        initial_observed_variables : list, optional
+            A list of the initial values of the variables that the controller
+            function manages. This list is used to initialize the
+            `observed_variables` argument of the controller function. The
+            default value is None, which initializes the list as an empty list.
+        return_controller : bool, optional
+            If True, the function will return the controller object created.
+            Default is False.
+        name : string, optional
+            Roll control system name. Has no impact in simulation, as it is only
+            used to display data in a more organized matter. Default is
+            "Roll Control".
+        controller_name : string, optional
+            Controller name. Has no impact in simulation, as it is only used to
+            display data in a more organized matter. Default is
+            "Roll Control Controller".
+
+        Returns
+        -------
+        roll_control : RollControl
+            RollControl object created.
+        controller : Controller, optional
+            Controller object created (only if return_controller is True).
+        """
+        if hasattr(self, "roll_control"):
+            # pylint: disable=access-member-before-definition
+            print(
+                "Only one roll control per rocket is currently supported. "
+                + "Overwriting previous roll control and controllers."
+            )
+            self._controllers = [
+                controller
+                for controller in self._controllers
+                if not isinstance(controller.interactive_objects, RollControl)
+            ]
+
+        roll_control = RollControl(
+            sampling_rate=sampling_rate,
+            max_roll_torque=max_roll_torque,
+            torque_rate_limit=torque_rate_limit,
+            clamp=clamp,
+            roll_torque=0,
+            name=name,
+        )
+        _controller = _Controller(
+            interactive_objects=roll_control,
+            controller_function=controller_function,
+            sampling_rate=sampling_rate,
+            initial_observed_variables=initial_observed_variables,
+            name=controller_name,
+        )
+        self.roll_control = roll_control
+        self._add_controllers(_controller)
+        if return_controller:
+            return roll_control, _controller
+        else:
+            return roll_control
+        
     def add_throttle_control(
         self,
         controller_function,
@@ -1967,125 +2198,6 @@ class Rocket:
             return throttle_control, _controller
         else:
             return throttle_control
-
-    def add_roll_control(
-        self,
-        max_roll_torque,
-        controller_function,
-        sampling_rate,
-        clamp=True,
-        initial_observed_variables=None,
-        return_controller=False,
-        name="Roll Control",
-        controller_name="Roll Control Controller",
-    ):
-        """Creates a new roll control system, storing its parameters such as
-        maximum roll torque, controller function, and sampling rate.
-
-        Parameters
-        ----------
-        max_roll_torque : int, float
-            Maximum roll torque magnitude in N·m. Must be non-negative.
-        controller_function : function, callable
-            An user-defined function responsible for controlling the roll control
-            system. This function is expected to take the following arguments, in
-            order:
-
-            1. `time` (float): The current simulation time in seconds.
-            2. `sampling_rate` (float): The rate at which the controller
-               function is called, measured in Hertz (Hz).
-            3. `state` (list): The state vector of the simulation, structured as
-               `[x, y, z, vx, vy, vz, e0, e1, e2, e3, wx, wy, wz]`.
-            4. `state_history` (list): A record of the rocket's state at each
-               step throughout the simulation. The state_history is organized as a
-               list of lists, with each sublist containing a state vector. The last
-               item in the list always corresponds to the previous state vector,
-               providing a chronological sequence of the rocket's evolving states.
-            5. `observed_variables` (list): A list containing the variables that
-               the controller function manages. The initial values in the first
-               step of the simulation are provided by the
-               `initial_observed_variables` argument.
-            6. `interactive_objects` (list): A list containing the roll control
-               object that the controller function can interact with.
-            7. `sensors` (list): A list of sensors that are attached to the
-                rocket. The most recent measurements of the sensors are provided
-                with the ``sensor.measurement`` attribute. The sensors are
-                listed in the same order as they are added to the rocket
-               `interactive_objects`
-
-            This function will be called during the simulation at the specified
-            sampling rate. The function should evaluate and change the observed
-            objects as needed. The function should return None.
-
-            .. note::
-
-                The function will be called according to the sampling rate
-                specified.
-
-        sampling_rate : float
-            The sampling rate of the controller function in Hertz (Hz). This
-            means that the controller function will be called every
-            `1/sampling_rate` seconds.
-        clamp : bool, optional
-            If True, the simulation will clamp roll torque to the range
-            [-max_roll_torque, max_roll_torque]. If False, a warning is
-            issued when roll torque exceeds the range. Default is True.
-        initial_observed_variables : list, optional
-            A list of the initial values of the variables that the controller
-            function manages. This list is used to initialize the
-            `observed_variables` argument of the controller function. The
-            default value is None, which initializes the list as an empty list.
-        return_controller : bool, optional
-            If True, the function will return the controller object created.
-            Default is False.
-        name : string, optional
-            Roll control system name. Has no impact in simulation, as it is only
-            used to display data in a more organized matter. Default is
-            "Roll Control".
-        controller_name : string, optional
-            Controller name. Has no impact in simulation, as it is only used to
-            display data in a more organized matter. Default is
-            "Roll Control Controller".
-
-        Returns
-        -------
-        roll_control : RollControl
-            RollControl object created.
-        controller : Controller, optional
-            Controller object created (only if return_controller is True).
-        """
-        if hasattr(self, "roll_control"):
-            # pylint: disable=access-member-before-definition
-            print(
-                "Only one roll control per rocket is currently supported. "
-                + "Overwriting previous roll control and controllers."
-            )
-            self._controllers = [
-                controller
-                for controller in self._controllers
-                if not isinstance(controller.interactive_objects, RollControl)
-            ]
-
-        roll_control = RollControl(
-            max_roll_torque=max_roll_torque,
-            clamp=clamp,
-            roll_torque=0,
-            name=name,
-        )
-        _controller = _Controller(
-            interactive_objects=roll_control,
-            controller_function=controller_function,
-            sampling_rate=sampling_rate,
-            initial_observed_variables=initial_observed_variables,
-            name=controller_name,
-        )
-        self.roll_control = roll_control
-        self._add_controllers(_controller)
-        if return_controller:
-            return roll_control, _controller
-        else:
-            return roll_control
-
     def set_rail_buttons(
         self,
         upper_button_position,
@@ -2301,11 +2413,8 @@ class Rocket:
     def to_dict(self, **kwargs):
         discretize = kwargs.get("discretize", False)
 
-        power_off_drag = self.power_off_drag
-        power_on_drag = self.power_on_drag
-        if discretize:
-            power_off_drag = power_off_drag.set_discrete(0, 4, 50, mutate_self=False)
-            power_on_drag = power_on_drag.set_discrete(0, 4, 50, mutate_self=False)
+        power_off_drag = self.power_off_drag_7d
+        power_on_drag = self.power_on_drag_7d
 
         rocket_dict = {
             "radius": self.radius,
@@ -2470,3 +2579,271 @@ class Rocket:
             rocket._add_controllers(controller)
 
         return rocket
+
+    def __process_drag_input(self, input_data, coeff_name):
+        """Process drag coefficient input and normalize it to a 7D Function.
+
+        Parameters
+        ----------
+        input_data : int, float, str, callable, Function
+            Input data to be processed.
+        coeff_name : str
+            Name of the coefficient being processed for error reporting.
+
+        Returns
+        -------
+        Function
+            Function object with 7 input arguments in the following order:
+            alpha, beta, mach, reynolds, pitch_rate, yaw_rate, roll_rate.
+        """
+        inputs = [
+            "alpha",
+            "beta",
+            "mach",
+            "reynolds",
+            "pitch_rate",
+            "yaw_rate",
+            "roll_rate",
+        ]
+
+        # Helper: lift a 1D Mach-only source into the required 7D signature.
+        def _wrap_mach_only_source(mach_source):
+            return Function(
+                lambda alpha, beta, mach, reynolds, pitch_rate, yaw_rate, roll_rate: (
+                    mach_source(mach)
+                ),
+                inputs,
+                [coeff_name],
+                interpolation="linear",
+                extrapolation="constant",
+            )
+
+        # Helper: enforce that Function-based inputs are either 1D (Mach) or 7D.
+        def _validate_function_domain_dimension(function):
+            if function.__dom_dim__ not in (1, 7):
+                raise ValueError(
+                    f"{coeff_name} function must have either 1 input argument "
+                    "(mach) or 7 input arguments (alpha, beta, mach, reynolds, "
+                    "pitch_rate, yaw_rate, roll_rate), in that order."
+                )
+
+        # Helper: count required positional arguments in a callable.
+        def _count_positional_args(callable_obj):
+            signature = inspect.signature(callable_obj)
+            positional_params = [
+                parameter
+                for parameter in signature.parameters.values()
+                if parameter.kind
+                in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                )
+                and parameter.default is inspect.Parameter.empty
+            ]
+            return len(positional_params)
+
+        # Case 1: string input can be a CSV path or any Function-supported source.
+        if isinstance(input_data, str):
+            if input_data.lower().endswith(".csv"):
+                return self.__load_rocket_drag_csv(input_data, coeff_name)
+
+            function_data = Function(input_data)
+            _validate_function_domain_dimension(function_data)
+            if function_data.__dom_dim__ == 7:
+                function_data.set_extrapolation("constant")
+                return function_data
+            return _wrap_mach_only_source(function_data.get_value_opt)
+
+        # Case 2: Function input is accepted directly after domain validation.
+        if isinstance(input_data, Function):
+            _validate_function_domain_dimension(input_data)
+            if input_data.__dom_dim__ == 7:
+                input_data.set_extrapolation("constant")
+                return input_data
+            return _wrap_mach_only_source(input_data.get_value_opt)
+
+        # Case 3: callable input must expose either 1 (Mach) or 7 arguments.
+        if callable(input_data):
+            n_positional_args = _count_positional_args(input_data)
+            if n_positional_args not in (1, 7):
+                raise ValueError(
+                    f"{coeff_name} callable must have either 1 positional "
+                    "argument (mach) or 7 positional arguments (alpha, beta, "
+                    "mach, reynolds, pitch_rate, yaw_rate, roll_rate), in that "
+                    "order."
+                )
+
+            if n_positional_args == 1:
+                return _wrap_mach_only_source(input_data)
+
+            return Function(
+                input_data,
+                inputs,
+                [coeff_name],
+                interpolation="linear",
+                extrapolation="constant",
+            )
+
+        # Case 4: scalar input means a constant drag coefficient in all conditions.
+        if isinstance(input_data, (int, float)):
+            return Function(
+                lambda alpha, beta, mach, reynolds, pitch_rate, yaw_rate, roll_rate: (
+                    float(input_data)
+                ),
+                inputs,
+                [coeff_name],
+                interpolation="linear",
+                extrapolation="constant",
+            )
+
+        # If is list/tuple try to pass it to a function.
+        # If composed of lists/tuples len 2, then interpret as function of mach
+        # Otherwise interpret it as function of all 7 variables
+        # This reuses Function's parser and then feeds back into this same pipeline.
+        if isinstance(input_data, (list, tuple)):
+            if all(
+                isinstance(item, (list, tuple)) and (len(item) == 2 or len(item) == 8)
+                for item in input_data
+            ):
+                try:
+                    return self.__process_drag_input(
+                        Function(list(input_data)), coeff_name
+                    )
+                except (TypeError, ValueError) as e:
+                    raise ValueError(
+                        f"Invalid list/tuple format for {coeff_name}. Expected "
+                        "a list of [mach, coefficient] pairs or a list of "
+                        "[alpha, beta, mach, reynolds, pitch_rate, yaw_rate, "
+                        "roll_rate, coefficient] entries."
+                    ) from e
+
+        raise TypeError(
+            f"Invalid input for {coeff_name}: must be int, float, CSV file path, "
+            "Function, or callable."
+        )
+
+    def __load_rocket_drag_csv(self, file_path, coeff_name):  # pylint: disable=too-many-statements,import-outside-toplevel
+        """Load Rocket drag CSV into a 7D Function.
+
+        Supports either headerless two-column (mach, coefficient) tables or
+        header-based multi-variable CSV tables.
+        """
+        independent_vars = [
+            "alpha",
+            "beta",
+            "mach",
+            "reynolds",
+            "pitch_rate",
+            "yaw_rate",
+            "roll_rate",
+        ]
+
+        def _is_numeric(value):
+            try:
+                float(value)
+                return True
+            except (TypeError, ValueError):
+                try:
+                    int(value)
+                    return True
+                except (TypeError, ValueError):
+                    return False
+
+        try:
+            with open(file_path, mode="r") as file:
+                reader = csv.reader(file)
+                first_row = next(reader)
+        except (FileNotFoundError, IOError) as e:
+            raise ValueError(f"Error reading {coeff_name} CSV file: {e}") from e
+        except StopIteration as e:
+            raise ValueError(f"Invalid or empty CSV file for {coeff_name}.") from e
+
+        if not first_row:
+            raise ValueError(f"Invalid or empty CSV file for {coeff_name}.")
+
+        is_headerless_two_column = len(first_row) == 2 and all(
+            _is_numeric(cell) for cell in first_row
+        )
+
+        if is_headerless_two_column:
+            csv_func = Function(
+                file_path,
+                interpolation="linear",
+                extrapolation="constant",
+            )
+
+            def mach_wrapper(
+                _alpha,
+                _beta,
+                mach,
+                _reynolds,
+                _pitch_rate,
+                _yaw_rate,
+                _roll_rate,
+            ):
+                return csv_func(mach)
+
+            return Function(
+                mach_wrapper,
+                independent_vars,
+                [coeff_name],
+                interpolation="linear",
+                extrapolation="constant",
+            )
+
+        header = [column.strip() for column in first_row]
+        present_columns = [col for col in independent_vars if col in header]
+
+        invalid_columns = [col for col in header[:-1] if col not in independent_vars]
+        if invalid_columns:
+            raise ValueError(
+                f"Invalid independent variable(s) in {coeff_name} CSV: "
+                f"{invalid_columns}. Valid options are: {independent_vars}."
+            )
+
+        if header[-1] in independent_vars:
+            raise ValueError(
+                f"Last column in {coeff_name} CSV must be the coefficient "
+                "value, not an independent variable."
+            )
+
+        if not present_columns:
+            raise ValueError(f"No independent variables found in {coeff_name} CSV.")
+
+        ordered_present_columns = [
+            col for col in header[:-1] if col in independent_vars
+        ]
+
+        csv_func = Function.from_regular_grid_csv(
+            file_path,
+            ordered_present_columns,
+            coeff_name,
+            extrapolation="constant",
+        )
+        if csv_func is None:
+            csv_func = Function(
+                file_path,
+                interpolation="linear",
+                extrapolation="constant",
+            )
+
+        def wrapper(alpha, beta, mach, reynolds, pitch_rate, yaw_rate, roll_rate):
+            args_by_name = {
+                "alpha": alpha,
+                "beta": beta,
+                "mach": mach,
+                "reynolds": reynolds,
+                "pitch_rate": pitch_rate,
+                "yaw_rate": yaw_rate,
+                "roll_rate": roll_rate,
+            }
+            selected_args = [args_by_name[col] for col in ordered_present_columns]
+            return csv_func(*selected_args)
+
+        return Function(
+            wrapper,
+            independent_vars,
+            [coeff_name],
+            interpolation="linear",
+            extrapolation="constant",
+        )
