@@ -26,6 +26,7 @@ from rocketpy.rocket.aero_surface.generic_surface import GenericSurface
 from rocketpy.rocket.components import Components
 from rocketpy.rocket.parachute import Parachute
 from rocketpy.rocket.roll_control import RollControl
+from rocketpy.rocket.throttle_control import ThrottleControl
 from rocketpy.rocket.tvc import TVC
 from rocketpy.tools import (
     deprecated,
@@ -2072,6 +2073,137 @@ class Rocket:
             return roll_control, _controller
         else:
             return roll_control
+
+    def add_throttle_control(
+        self,
+        controller_function,
+        sampling_rate,
+        throttle_range=(0, 1),
+        initial_throttle=1.0,
+        clamp=True,
+        throttle_rate_limit=0,
+        initial_observed_variables=None,
+        return_controller=False,
+        name="Throttle Control",
+        controller_name="Throttle Controller",
+    ):
+        """Creates a new throttle control system, storing its parameters such as
+        throttle limits, controller function, and sampling rate.
+
+        Parameters
+        ----------
+        controller_function : function, callable
+            An user-defined function responsible for controlling the throttle
+            system. This function is expected to take the following arguments,
+            in order:
+
+            1. `time` (float): The current simulation time in seconds.
+            2. `sampling_rate` (float): The rate at which the controller
+               function is called, measured in Hertz (Hz).
+            3. `state` (list): The state vector of the simulation, structured as
+               `[x, y, z, vx, vy, vz, e0, e1, e2, e3, wx, wy, wz]`.
+            4. `state_history` (list): A record of the rocket's state at each
+               step throughout the simulation. The state_history is organized as a
+               list of lists, with each sublist containing a state vector. The last
+               item in the list always corresponds to the previous state vector,
+               providing a chronological sequence of the rocket's evolving states.
+            5. `observed_variables` (list): A list containing the variables that
+               the controller function manages. The initial values in the first
+               step of the simulation are provided by the
+               `initial_observed_variables` argument.
+            6. `interactive_objects` (list): A list containing the throttle
+               control object that the controller function can interact with.
+            7. `sensors` (list): A list of sensors that are attached to the
+                rocket. The most recent measurements of the sensors are provided
+                with the ``sensor.measurement`` attribute. The sensors are
+                listed in the same order as they are added to the rocket
+               ``interactive_objects``
+
+            This function will be called during the simulation at the specified
+            sampling rate. The function should evaluate and change the observed
+            objects as needed. The function should return None.
+
+            .. note::
+
+                The function will be called according to the sampling rate specified.
+
+        sampling_rate : float
+            The sampling rate of the controller function in Hertz (Hz). This
+            means that the controller function will be called every
+            `1/sampling_rate` seconds.
+        throttle_range : tuple, optional
+            A tuple containing the minimum and maximum throttle values. Must be in the range [0, 1]. Default is (0.0, 1.0).
+
+        initial_throttle : float, optional
+            Initial throttle value at the start of the simulation. Must be within
+            the range [throttle_range[0], throttle_range[1]]. Default is 1.0.
+        clamp : bool, optional
+            If True, the simulation will clamp throttle values to the range
+            [throttle_range[0], throttle_range[1]]. If False, a warning is issued when
+            throttle values exceed the range. Default is True.
+        throttle_rate_limit : float, optional
+            Maximum throttle rate in 1/s. Throttle is limited to this rate.
+            Must be non-negative. Default is 0 (no throttle change limit).
+        initial_observed_variables : list, optional
+            A list of the initial values of the variables that the controller
+            function manages. This list is used to initialize the
+            `observed_variables` argument of the controller function. The
+            default value is None, which initializes the list as an empty list.
+        return_controller : bool, optional
+            If True, the function will return the controller object created.
+            Default is False.
+        name : string, optional
+            Throttle control system name. Has no impact in simulation, as it is
+            only used to display data in a more organized matter. Default is
+            "Throttle Control".
+        controller_name : string, optional
+            Controller name. Has no impact in simulation, as it is only used to
+            display data in a more organized matter. Default is
+            "Throttle Controller".
+
+        Returns
+        -------
+        throttle_control : ThrottleControl
+            ThrottleControl object created.
+        controller : Controller, optional
+            Controller object created (only if return_controller is True).
+        """
+
+        if hasattr(self, "throttle_control"):
+            print(
+                "Only one throttle control per rocket is currently supported. "
+                + "Overwriting previous throttle control and controllers."
+            )
+            self._controllers = [
+                controller
+                for controller in self._controllers
+                if not isinstance(controller.interactive_objects, ThrottleControl)
+            ]
+
+        throttle_control = ThrottleControl(
+            throttle_range=throttle_range,
+            initial_throttle=initial_throttle,
+            clamp=clamp,
+            sampling_rate=sampling_rate,
+            throttle_rate_limit=throttle_rate_limit,
+            name=name,
+        )
+
+        _controller = _Controller(
+            interactive_objects=throttle_control,
+            controller_function=controller_function,
+            sampling_rate=sampling_rate,
+            initial_observed_variables=initial_observed_variables,
+            name=controller_name,
+        )
+
+        self.throttle_control = throttle_control
+        self._add_controllers(_controller)
+
+        if return_controller:
+            return throttle_control, _controller
+        else:
+            return throttle_control
 
     def set_rail_buttons(
         self,
