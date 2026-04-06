@@ -1357,8 +1357,12 @@ class Flight:
         ]
         if len(valid_t_root) > 1:  # pragma: no cover
             raise ValueError("Multiple roots found when solving for impact time.")
-        # Determine impact state at t_root
-        self.t = self.t_final = valid_t_root[0] + self.solution[-2][0]
+        # Determine impact time: use root if found, otherwise fall back to last step
+        # (fallback handles impact triggered at first time step with very low thrust)
+        if valid_t_root:
+            self.t = self.t_final = valid_t_root[0] + self.solution[-2][0]
+        else:
+            self.t = self.t_final = self.solution[-1][0]
         interpolator = phase.solver.dense_output()
         self.y_sol = self.impact_state = interpolator(self.t)
         # Roll back solution
