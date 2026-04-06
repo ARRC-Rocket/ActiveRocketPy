@@ -1946,12 +1946,9 @@ class Flight:
             + self.rocket.motor.pressure_thrust(pressure),
             0,
         )
-        throttle = getattr(
-            getattr(self.rocket, "throttle_control", None),
-            "throttle",
-            1.0,
+        effective_thrust = net_thrust * getattr(
+            getattr(self.rocket, "throttle_control", None), "throttle", 1.0
         )
-        effective_thrust = net_thrust * throttle
         rho = self.env.density.get_value_opt(z)
         R3 = -0.5 * rho * (free_stream_speed**2) * self.rocket.area * (drag_coeff)
 
@@ -2052,12 +2049,9 @@ class Flight:
                 0,
             )
             # Throttle control
-            throttle = getattr(
-                getattr(self.rocket, "throttle_control", None),
-                "throttle",
-                1.0,
+            effective_thrust = net_thrust * getattr(
+                getattr(self.rocket, "throttle_control", None), "throttle", 1.0
             )
-            effective_thrust = net_thrust * throttle
 
             # TVC (Thrust Vector Control)
             if hasattr(self.rocket, "tvc"):
@@ -2776,12 +2770,9 @@ class Flight:
             M3 += L
 
         # Throttle control
-        throttle = getattr(
-            getattr(self.rocket, "throttle_control", None),
-            "throttle",
-            1.0,
+        effective_thrust = net_thrust * getattr(
+            getattr(self.rocket, "throttle_control", None), "throttle", 1.0
         )
-        effective_thrust = net_thrust * throttle
 
         # TVC (Thrust Vector Control)
         if hasattr(self.rocket, "tvc"):

@@ -2079,7 +2079,7 @@ class Rocket:
         controller_function,
         sampling_rate,
         throttle_range=(0, 1),
-        initial_throttle=1.0,
+        throttle=1.0,
         clamp=True,
         throttle_rate_limit=0,
         initial_observed_variables=None,
@@ -2182,7 +2182,7 @@ class Rocket:
 
         throttle_control = ThrottleControl(
             throttle_range=throttle_range,
-            initial_throttle=initial_throttle,
+            throttle=throttle,
             clamp=clamp,
             sampling_rate=sampling_rate,
             throttle_rate_limit=throttle_rate_limit,
