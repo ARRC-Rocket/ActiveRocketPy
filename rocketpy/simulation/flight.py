@@ -685,6 +685,17 @@ class Flight:
         self.prints = _FlightPrints(self)
         self.plots = _FlightPlots(self)
 
+    def post_process_simulation(self):
+        self.t_final = self.t
+        self.__transform_pressure_signals_lists_to_functions()
+        if self._controllers:
+            # cache post process variables
+            self.__evaluate_post_process = np.array(self.__post_processed_variables)
+        if self.sensors:
+            self.__cache_sensor_data()
+        if self.verbose:
+            print(f"\n>>> Simulation Completed at Time: {self.t:3.4f} s")
+
     def __repr__(self):
         return (
             f"<Flight(rocket= {self.rocket}, "
@@ -838,15 +849,7 @@ class Flight:
                     if self._controllers:
                         phase.derivative(self.t, self.y_sol, post_processing=True)
 
-        self.t_final = self.t
-        self.__transform_pressure_signals_lists_to_functions()
-        if self._controllers:
-            # cache post process variables
-            self.__evaluate_post_process = np.array(self.__post_processed_variables)
-        if self.sensors:
-            self.__cache_sensor_data()
-        if verbose:
-            print(f"\n>>> Simulation Completed at Time: {self.t:3.4f} s")
+        self.post_process_simulation()
 
     def step_simulation(self):
         """Step through the simulation by one time node."""
@@ -859,15 +862,7 @@ class Flight:
         if phase_index >= len(self.flight_phases) - 1:
             state["finished"] = True
 
-            self.t_final = self.t
-            self.__transform_pressure_signals_lists_to_functions()
-            if self._controllers:
-                # cache post process variables
-                self.__evaluate_post_process = np.array(self.__post_processed_variables)
-            if self.sensors:
-                self.__cache_sensor_data()
-            if self.verbose:
-                print(f"\n>>> Simulation Completed at Time: {self.t:3.4f} s")
+            self.post_process_simulation()
             self.initialize_prints_plots()
             return
 
