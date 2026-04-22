@@ -413,6 +413,37 @@ def test_max_values(flight_calisto_robust):
     assert pytest.approx(285.94948, rel=rtol) == test.max_speed
 
 
+@pytest.mark.parametrize(
+    "flight_time_attr",
+    ["t_initial", "out_of_rail_time", "apogee_time", "t_final"],
+)
+def test_axial_acceleration(flight_calisto_custom_wind, flight_time_attr):
+    """Tests the axial_acceleration property by manually calculating the
+    dot product of the acceleration vector and the attitude vector at
+    specific time steps.
+
+    Parameters
+    ----------
+    flight_calisto_custom_wind : rocketpy.Flight
+        Flight object to be tested.
+    flight_time_attr : str
+        The name of the attribute of the flight object that contains the time
+        of the point to be tested.
+    """
+    flight = flight_calisto_custom_wind
+    t = getattr(flight, flight_time_attr)
+
+    calculated_axial_acc = flight.axial_acceleration(t)
+
+    expected_axial_acc = (
+        flight.ax(t) * flight.attitude_vector_x(t)
+        + flight.ay(t) * flight.attitude_vector_y(t)
+        + flight.az(t) * flight.attitude_vector_z(t)
+    )
+
+    assert pytest.approx(expected_axial_acc, abs=1e-9) == calculated_axial_acc
+
+
 def test_effective_rail_length(flight_calisto_robust, flight_calisto_nose_to_tail):
     """Tests the effective rail length of the flight simulation. The expected
     values are calculated by hand, and should be valid as long as the rail
@@ -628,3 +659,35 @@ def test_stability_static_margins(
         assert np.all(moments / wind_sign <= 0)
     else:  # static_margin == 0
         assert np.all(np.abs(moments) <= 1e-10)
+
+
+def test_max_acceleration_power_off_time_with_controllers(
+    flight_calisto_air_brakes,
+):
+    """Test that max_acceleration_power_off_time returns a valid time when
+    controllers are present (e.g., air brakes). This is a regression test for
+    a bug where the time was always returned as 0.0.
+
+    Parameters
+    ----------
+    flight_calisto_air_brakes : rocketpy.Flight
+        Flight object with air brakes. See the conftest.py file for more info
+        regarding this pytest fixture.
+    """
+    test = flight_calisto_air_brakes
+    burn_out_time = test.rocket.motor.burn_out_time
+
+    # The max_acceleration_power_off_time should be at or after motor burn out
+    # It should NOT be 0.0, which was the bug behavior
+    assert test.max_acceleration_power_off_time > 0, (
+        "max_acceleration_power_off_time should not be zero"
+    )
+    assert test.max_acceleration_power_off_time >= burn_out_time - 0.01, (
+        f"max_acceleration_power_off_time ({test.max_acceleration_power_off_time}) "
+        f"should be at or after burn_out_time ({burn_out_time})"
+    )
+
+    # Also verify max_acceleration_power_off is positive
+    assert test.max_acceleration_power_off > 0, (
+        "max_acceleration_power_off should be greater than zero"
+    )

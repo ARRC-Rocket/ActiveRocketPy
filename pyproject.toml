@@ -1,7 +1,7 @@
 [project]
-name = "rocketpy"
-version = "1.11.0"
-description="Advanced 6-DOF trajectory simulation for High-Power Rocketry."
+name = "activerocketpy"
+version = "1.12.0"
+description="Advanced 6-DOF Rocket GNC simulation"
 dynamic = ["dependencies"]
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,9 +21,8 @@ classifiers = [
 [project.urls]
 homepage = "https://rocketpy.org/"
 documentation = "https://docs.rocketpy.org/"
-repository = "https://github.com/RocketPy-Team/RocketPy"
-issues = "https://github.com/RocketPy-Team/RocketPy/issues"
-changelog = "https://github.com/RocketPy-Team/RocketPy/blob/master/CHANGELOG.md"
+repository = "https://github.com/ARRC-Rocket/ActiveRocketPy"
+issues = "https://github.com/ARRC-Rocket/ActiveRocketPy/issues"
 
 
 [build-system]
@@ -65,9 +64,10 @@ monte-carlo = [
     "multiprocess>=0.70",
     "statsmodels",
     "prettytable",
+    "contextily>=1.0.0; python_version < '3.14'",
 ]
 
-all = ["rocketpy[env-analysis]", "rocketpy[monte-carlo]"]
+all = ["activerocketpy[env-analysis]", "activerocketpy[monte-carlo]"]
 
 
 [tool.coverage.report]
@@ -78,7 +78,7 @@ exclude_also = [
 
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py310"
 line-length = 88
 indent-width = 4
 

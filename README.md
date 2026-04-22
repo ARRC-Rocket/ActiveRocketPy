@@ -99,3 +99,19 @@ pip install -r requirements-tests.txt  # install test/dev requirements
 > Since then, the [RocketPy Team](https://github.com/orgs/RocketPy-Team/teams/rocketpy-team) has been growing fast and our contributors are what makes us special!
 
 ActiveRocketPy is forked and maintained by [ZuoRen Chen](https://github.com/zuorenchen), along with the team from [Advanced Rocket Research Center (ARRC)](https://github.com/ARRC-Rocket).
+
+
+## Citation
+
+If you run ActiveRocketPy in your research, please consider citing:
+
+```bibtex
+@misc{ActiveRocketPy,
+  author = {Zuo-Ren Chen and Advanced Rocket Research Center (ARRC)},
+  title = {ActiveRocketPy: A 6-DoF Rocket GNC Simulator},
+  month = {April},
+  year = {2026},
+  url = {https://github.com/ARRC-Rocket/ActiveRocketPy}
+}
+```
+To cite RocketPy, please check its repository for the latest citation information: [RocketPy](https://github.com/RocketPy-Team/RocketPy)
