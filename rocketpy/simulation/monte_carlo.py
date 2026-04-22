@@ -22,6 +22,7 @@ from time import time
 
 import numpy as np
 import simplekml
+from scipy.stats import bootstrap
 
 from rocketpy._encoders import RocketPyEncoder
 from rocketpy.plots.monte_carlo_plots import _MonteCarloPlots
@@ -167,6 +168,7 @@ class MonteCarlo:
         number_of_simulations,
         append=False,
         parallel=False,
+        random_seed=None,
         n_workers=None,
         **kwargs,
     ):  # pylint: disable=too-many-statements
@@ -182,6 +184,8 @@ class MonteCarlo:
             False, the files will be overwritten. Default is False.
         parallel : bool, optional
             If True, the simulations will be run in parallel. Default is False.
+        random_seed : int, optional
+            The seed to set the random number generator. Default is None.
         n_workers : int, optional
             Number of workers to be used if ``parallel=True``. If None, the
             number of workers will be equal to the number of CPUs available.
@@ -201,7 +205,8 @@ class MonteCarlo:
 
         Returns
         -------
-        None
+        dict
+            A dictionary containing the results of the Monte Carlo simulation.
 
         Notes
         -----
@@ -226,11 +231,13 @@ class MonteCarlo:
         self.__setup_files(append)
 
         if parallel:
-            self.__run_in_parallel(n_workers)
+            self.__run_in_parallel(random_seed, n_workers)
         else:
-            self.__run_in_serial()
+            self.__run_in_serial(random_seed)
 
         self.__terminate_simulation()
+
+        return self.results
 
     def __setup_files(self, append):
         """
@@ -265,9 +272,14 @@ class MonteCarlo:
         except OSError as error:
             raise OSError(f"Error creating files: {error}") from error
 
-    def __run_in_serial(self):
+    def __run_in_serial(self, random_seed=None):
         """
         Runs the monte carlo simulation in serial mode.
+
+        Parameters
+        ----------
+        random_seed : int, optional
+            The seed to set the random number generator in serial mode. Default is None.
 
         Returns
         -------
@@ -279,6 +291,9 @@ class MonteCarlo:
             start_time=time(),
         )
         try:
+            self.environment._set_stochastic(random_seed)
+            self.rocket._set_stochastic(random_seed)
+            self.flight._set_stochastic(random_seed)
             while sim_monitor.keep_simulating():
                 sim_monitor.increment()
                 inputs_json, outputs_json = "", ""
@@ -292,7 +307,7 @@ class MonteCarlo:
                 with open(self.output_file, "a", encoding="utf-8") as f:
                     f.write(outputs_json)
 
-                sim_monitor.print_update_status(sim_monitor.count)
+                sim_monitor.print_update_status()
 
             sim_monitor.print_final_status()
 
@@ -307,12 +322,14 @@ class MonteCarlo:
                 f.write(inputs_json)
             raise error
 
-    def __run_in_parallel(self, n_workers=None):
+    def __run_in_parallel(self, random_seed=None, n_workers=None):
         """
         Runs the monte carlo simulation in parallel.
 
         Parameters
         ----------
+        random_seed : int, optional
+            The seed to set the random sequence generator in parallel mode. Default is None.
         n_workers: int, optional
             Number of workers to be used. If None, the number of workers
             will be equal to the number of CPUs available. Default is None.
@@ -337,7 +354,7 @@ class MonteCarlo:
             )
 
             processes = []
-            seeds = np.random.SeedSequence().spawn(n_workers)
+            seeds = np.random.SeedSequence(random_seed).spawn(n_workers)
 
             for seed in seeds:
                 sim_producer = multiprocess.Process(
@@ -430,7 +447,7 @@ class MonteCarlo:
                     with open(self.output_file, "a", encoding="utf-8") as f:
                         f.write(outputs_json)
 
-                    sim_monitor.print_update_status(sim_idx)
+                    sim_monitor.print_update_status()
                 finally:
                     mutex.release()
 
@@ -461,7 +478,71 @@ class MonteCarlo:
             initial_solution=self.flight.initial_solution,
             terminate_on_apogee=self.flight.terminate_on_apogee,
             time_overshoot=self.flight.time_overshoot,
+            max_time=self.flight.max_time,
+            max_time_step=self.flight.max_time_step,
+            min_time_step=self.flight.min_time_step,
         )
+
+    def estimate_confidence_interval(
+        self,
+        attribute,
+        statistic=np.mean,
+        confidence_level=0.95,
+        n_resamples=1000,
+        random_state=None,
+    ):
+        """
+        Estimates the confidence interval for a specific attribute of the results
+        using the bootstrap method.
+
+        Parameters
+        ----------
+        attribute : str
+            The name of the attribute stored in self.results (e.g., "apogee", "max_velocity").
+        statistic : callable, optional
+            A function that computes the statistic of interest (e.g., np.mean, np.std).
+            Default is np.mean.
+        confidence_level : float, optional
+            The confidence level for the interval (between 0 and 1). Default is 0.95.
+        n_resamples : int, optional
+            The number of resamples to perform. Default is 1000.
+        random_state : int or None, optional
+            Seed for the random number generator to ensure reproducibility. If None (default), the random number generator is not seeded.
+
+        Returns
+        -------
+        confidence_interval : ConfidenceInterval
+            An object containing the low and high bounds of the confidence interval.
+            Access via .low and .high.
+        """
+        if attribute not in self.results:
+            available = list(self.results.keys())
+            raise ValueError(
+                f"Attribute '{attribute}' not found in results. Available attributes: {available}"
+            )
+
+        if not 0 < confidence_level < 1:
+            raise ValueError(
+                f"confidence_level must be between 0 and 1, got {confidence_level}"
+            )
+
+        if not isinstance(n_resamples, int) or n_resamples <= 0:
+            raise ValueError(
+                f"n_resamples must be a positive integer, got {n_resamples}"
+            )
+
+        data = (np.array(self.results[attribute]),)
+
+        res = bootstrap(
+            data,
+            statistic,
+            confidence_level=confidence_level,
+            n_resamples=n_resamples,
+            random_state=random_state,
+            method="percentile",
+        )
+
+        return res.confidence_interval
 
     def __evaluate_flight_inputs(self, sim_idx):
         """Evaluates the inputs of a single flight simulation.
@@ -721,7 +802,7 @@ class MonteCarlo:
         self.set_outputs_log()
         self.set_num_of_loaded_sims()
         self.set_results()
-        self.set_processed_results()
+        # self.set_processed_results() TODO: This fails when results contain arrays, need to be fixed
 
     @property
     def error_file(self):
@@ -1208,6 +1289,7 @@ class _SimMonitor:
         self.count = initial_count
         self.n_simulations = n_simulations
         self.start_time = start_time
+        self.completed_count = 0
 
     def keep_simulating(self):
         return self.count < self.n_simulations
@@ -1216,25 +1298,24 @@ class _SimMonitor:
         self.count += 1
         return self.count
 
-    def print_update_status(self, sim_idx):
+    def print_update_status(self):
         """Prints a message on the same line as the previous one and replaces
         the previous message with the new one, deleting the extra characters
-        from the previous message.
-
-        Parameters
-        ----------
-        sim_idx : int
-            Index of the current simulation.
+        from the previous message. This method increments the completed_count
+        to track how many simulations have finished (thread-safe when called
+        within a mutex-protected section).
 
         Returns
         -------
         None
         """
+        self.completed_count += 1
 
-        average_time = (time() - self.start_time) / (self.count - self.initial_count)
-        estimated_time = int((self.n_simulations - self.count) * average_time)
+        average_time = (time() - self.start_time) / self.completed_count
+        remaining = self.n_simulations - self.initial_count - self.completed_count
+        estimated_time = int(remaining * average_time)
 
-        msg = f"Current iteration: {sim_idx:06d}"
+        msg = f"Iterations completed: {self.completed_count:06d}"
         msg += f" | Average Time per Iteration: {average_time:.3f} s"
         msg += f" | Estimated time left: {estimated_time} s"
 

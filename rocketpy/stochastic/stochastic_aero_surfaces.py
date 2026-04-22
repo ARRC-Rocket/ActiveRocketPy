@@ -6,6 +6,7 @@ StochasticEllipticalFins, StochasticTail and StochasticRailButtons classes.
 from rocketpy.rocket.aero_surface import (
     AirBrakes,
     EllipticalFins,
+    LinearGenericSurface,
     NoseCone,
     RailButtons,
     Tail,
@@ -546,3 +547,94 @@ class StochasticAirBrakes(StochasticModel):
         )
         air_brakes.drag_coefficient *= generated_dict["drag_coefficient_curve_factor"]
         return air_brakes
+
+
+class StochasticLinearGenericSurface(StochasticModel):
+    """A Stochastic Linear Generic Surface class that inherits from StochasticModel.
+
+    See Also
+    --------
+    :ref:`stochastic_model` and
+    :class:`LinearGenericSurface <rocketpy.LinearGenericSurface>`
+
+    Attributes
+    ----------
+    object : LinearGenericSurface
+        LinearGenericSurface object to be used for validation.
+    reference_area : tuple, list, int, float
+        Reference area of the aerodynamic surface. Has the unit of meters
+        squared. Commonly defined as the rocket's cross-sectional area.
+    reference_length : tuple, list, int, float
+        Reference length of the aerodynamic surface. Has the unit of meters.
+        Commonly defined as the rocket's diameter.
+    center_of_pressure : tuple, optional
+        Application point of the aerodynamic forces and moments. The
+        center of pressure is defined in the local coordinate system of the
+        aerodynamic surface.
+    coefficient_curve_factor : tuple, list, int, float, optional
+        The drag curve factor of the air brakes. This value scales the
+        drag coefficient curve to introduce stochastic variability.
+    name : list[str]
+        List with the name of the object. This attribute can not be randomized.
+    """
+
+    def __init__(
+        self,
+        linear_generic_surface,
+        reference_area=None,
+        reference_length=None,
+        coefficient_constants=None,
+        center_of_pressure=None,
+    ):
+        """Initializes the Stochastic Linear Generic Surface class.
+
+        See Also
+        --------
+        :ref:`stochastic_model`
+
+        Parameters
+        ----------
+        linear_generic_surface : LinearGenericSurface
+            LinearGenericSurface object to be used for validation.
+        reference_area : int, float
+            Reference area of the aerodynamic surface. Has the unit of meters
+            squared. Commonly defined as the rocket's cross-sectional area.
+        reference_length : int, float
+            Reference length of the aerodynamic surface. Has the unit of meters.
+            Commonly defined as the rocket's diameter.
+        coefficient_constants : dict
+            Dictionary containing the aerodynamic coefficient constants of the
+            surface. Passed directly to ``LinearGenericSurface``.
+        center_of_pressure : tuple, optional
+            Application point of the aerodynamic forces and moments. The center
+            of pressure is defined in the local coordinate system of the
+            aerodynamic surface.
+        coefficient_curve_factor : tuple, list, int, float, optional
+            Scaling factor applied to the aerodynamic coefficient curves of the
+            generic surface to introduce stochastic variability.
+        """
+        super().__init__(
+            linear_generic_surface,
+            reference_area=reference_area,
+            reference_length=reference_length,
+            coefficient_constants=coefficient_constants,
+            center_of_pressure=center_of_pressure,
+            name=None,
+        )
+
+    def create_object(self):
+        """Creates and returns a LinearGenericSurface object from the randomly generated input arguments.
+
+        Returns
+        -------
+        linear_generic_surface : LinearGenericSurface
+            LinearGenericSurface object with the randomly generated input arguments.
+        """
+        generated_dict = next(self.dict_generator())
+        linear_generic_surface = LinearGenericSurface(
+            reference_area=generated_dict["reference_area"],
+            reference_length=generated_dict["reference_length"],
+            coefficient_constants=generated_dict["coefficient_constants"],
+            center_of_pressure=generated_dict["center_of_pressure"],
+        )
+        return linear_generic_surface

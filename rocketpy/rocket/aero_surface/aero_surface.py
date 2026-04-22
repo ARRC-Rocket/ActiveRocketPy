@@ -131,10 +131,13 @@ class AeroSurface(ABC):
         cpz = cp[2]
         stream_vx, stream_vy, stream_vz = stream_velocity
         if stream_vx**2 + stream_vy**2 != 0:  # TODO: maybe try/except
-            # Normalize component stream velocity in body frame
-            stream_vzn = stream_vz / stream_speed
+            # Normalize component stream velocity in body frame; clip to [-1, 1]
+            # to guard arccos against floating-point values just outside the domain.
+            stream_vzn = np.clip(stream_vz / stream_speed, -1.0, 1.0)
             if -1 * stream_vzn < 1:
-                attack_angle = np.arccos(-stream_vzn)
+                # Cap attack angle at π/10: the Barrowman linear model is only valid
+                # for small angles of attack.
+                attack_angle = min(np.arccos(-stream_vzn), np.pi / 10)
                 c_lift = self.cl.get_value_opt(attack_angle, stream_mach)
                 # Component lift force magnitude
                 lift = 0.5 * rho * (stream_speed**2) * self.reference_area * c_lift

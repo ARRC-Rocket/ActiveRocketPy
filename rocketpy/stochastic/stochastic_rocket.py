@@ -11,6 +11,7 @@ from rocketpy.motors.solid_motor import SolidMotor
 from rocketpy.rocket.aero_surface import (
     AirBrakes,
     EllipticalFins,
+    LinearGenericSurface,
     NoseCone,
     RailButtons,
     Tail,
@@ -25,6 +26,7 @@ from rocketpy.stochastic.stochastic_motor_model import StochasticMotorModel
 from .stochastic_aero_surfaces import (
     StochasticAirBrakes,
     StochasticEllipticalFins,
+    StochasticLinearGenericSurface,
     StochasticNoseCone,
     StochasticRailButtons,
     StochasticTail,
@@ -74,6 +76,8 @@ class StochasticRocket(StochasticModel):
         The inertia of the rocket around the xz axis.
     inertia_23 : tuple, list, int, float
         The inertia of the rocket around the yz axis.
+    volume : tuple, list, int, float
+        The volume of the rocket in m³.
     power_off_drag : list
         The power off drag of the rocket.
     power_on_drag : list
@@ -100,6 +104,7 @@ class StochasticRocket(StochasticModel):
         inertia_12=None,
         inertia_13=None,
         inertia_23=None,
+        volume=None,
         power_off_drag=None,
         power_on_drag=None,
         power_off_drag_factor=(1, 0),
@@ -132,6 +137,8 @@ class StochasticRocket(StochasticModel):
             The inertia of the rocket around the xz axis.
         inertia_23 : int, float, tuple, list, optional
             The inertia of the rocket around the yz axis.
+        volume : int, float, tuple, list, optional
+            The volume of the rocket in m³.
         power_off_drag : list, optional
             The power off drag of the rocket.
         power_on_drag : list, optional
@@ -164,6 +171,7 @@ class StochasticRocket(StochasticModel):
             I_12_without_motor=inertia_12,
             I_13_without_motor=inertia_13,
             I_23_without_motor=inertia_23,
+            volume=volume,
             power_off_drag=power_off_drag,
             power_on_drag=power_on_drag,
             power_off_drag_factor=power_off_drag_factor,
@@ -412,6 +420,36 @@ class StochasticRocket(StochasticModel):
 
         self.air_brakes.append(air_brakes)
         self.air_brake_controller = controller
+
+    def add_linear_generic_surface(self, linear_generic_surface, position=None):
+        """Adds a stochastic linear generic surface to the stochastic rocket.
+
+        Parameters
+        ----------
+        linear_generic_surface : StochasticLinearGenericSurface or LinearGenericSurface
+            The linear generic surface to be added to the stochastic rocket.
+        position : tuple, list, int, float, optional
+            The position of the linear generic surface.
+        """
+        if not isinstance(
+            linear_generic_surface,
+            (StochasticLinearGenericSurface, LinearGenericSurface),
+        ):
+            raise TypeError(
+                "`linear_generic_surface` must be of LinearGenericSurface or "
+                "StochasticLinearGenericSurface type"
+            )
+        if isinstance(linear_generic_surface, LinearGenericSurface):
+            linear_generic_surface = StochasticLinearGenericSurface(
+                linear_generic_surface=linear_generic_surface
+            )
+        self._add_surfaces(
+            linear_generic_surface,
+            position,
+            LinearGenericSurface,
+            StochasticLinearGenericSurface,
+            "`linear_generic_surface` must be of LinearGenericSurface or StochasticLinearGenericSurface type",
+        )
 
     def add_cp_eccentricity(self, x=None, y=None):
         """Moves line of action of aerodynamic forces to simulate an
@@ -735,6 +773,7 @@ class StochasticRocket(StochasticModel):
                 generated_dict["I_13_without_motor"],
                 generated_dict["I_23_without_motor"],
             ),
+            volume=generated_dict["volume"],
             power_off_drag=generated_dict["power_off_drag"],
             power_on_drag=generated_dict["power_on_drag"],
             center_of_mass_without_motor=generated_dict["center_of_mass_without_motor"],
@@ -742,8 +781,8 @@ class StochasticRocket(StochasticModel):
                 "coordinate_system_orientation"
             ],
         )
-        rocket.power_off_drag *= generated_dict["power_off_drag_factor"]
-        rocket.power_on_drag *= generated_dict["power_on_drag_factor"]
+        rocket.power_off_drag_7d *= generated_dict["power_off_drag_factor"]
+        rocket.power_on_drag_7d *= generated_dict["power_on_drag_factor"]
 
         if hasattr(self, "cp_eccentricity_x") and hasattr(self, "cp_eccentricity_y"):
             cp_ecc_x, cp_ecc_y = self._create_eccentricities(
