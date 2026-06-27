@@ -59,6 +59,7 @@ class Sensor(ABC):
         temperature_bias=0,
         temperature_scale_factor=0,
         name="Sensor",
+        seed=None,
     ):
         """
         Initialize the accelerometer sensor
@@ -141,6 +142,12 @@ class Sensor(ABC):
         self._save_data = self._save_data_single
         self._random_walk_drift = 0
         self.normal_vector = Vector([0, 0, 0])
+        # Per-instance RNG seeded deterministically (from the scenario seed when
+        # provided) so sensor noise is reproducible and independent of the
+        # process-global numpy RNG -- and therefore safe under parallel/forked
+        # evaluation. ``seed=None`` keeps the noise random but still per-instance.
+        self._seed = seed
+        self._rng = np.random.default_rng(seed)
 
         # handle measurement range
         if isinstance(measurement_range, (tuple, list)):
@@ -353,6 +360,7 @@ class InertialSensor(Sensor):
         temperature_scale_factor=0,
         cross_axis_sensitivity=0,
         name="Sensor",
+        seed=None,
     ):
         """
         Initialize the accelerometer sensor
@@ -469,6 +477,7 @@ class InertialSensor(Sensor):
                 temperature_scale_factor, "temperature_scale_factor"
             ),
             name=name,
+            seed=seed,
         )
 
         self.orientation = orientation
@@ -553,12 +562,12 @@ class InertialSensor(Sensor):
         """
         # white noise
         white_noise = Vector(
-            [np.random.normal(0, self.noise_variance[i] ** 0.5) for i in range(3)]
+            [self._rng.normal(0, self.noise_variance[i] ** 0.5) for i in range(3)]
         ) & (self.noise_density * self.sampling_rate**0.5)
 
         # random walk
         self._random_walk_drift = self._random_walk_drift + Vector(
-            [np.random.normal(0, self.random_walk_variance[i] ** 0.5) for i in range(3)]
+            [self._rng.normal(0, self.random_walk_variance[i] ** 0.5) for i in range(3)]
         ) & (self.random_walk_density / self.sampling_rate**0.5)
 
         # add noise
@@ -655,6 +664,7 @@ class ScalarSensor(Sensor):
         temperature_bias=0,
         temperature_scale_factor=0,
         name="Sensor",
+        seed=None,
     ):
         """
         Initialize the accelerometer sensor
@@ -726,6 +736,7 @@ class ScalarSensor(Sensor):
             temperature_bias=temperature_bias,
             temperature_scale_factor=temperature_scale_factor,
             name=name,
+            seed=seed,
         )
 
     def quantize(self, value):
@@ -763,7 +774,7 @@ class ScalarSensor(Sensor):
         """
         # white noise
         white_noise = (
-            np.random.normal(0, self.noise_variance**0.5)
+            self._rng.normal(0, self.noise_variance**0.5)
             * self.noise_density
             * self.sampling_rate**0.5
         )
@@ -771,7 +782,7 @@ class ScalarSensor(Sensor):
         # random walk
         self._random_walk_drift = (
             self._random_walk_drift
-            + np.random.normal(0, self.random_walk_variance**0.5)
+            + self._rng.normal(0, self.random_walk_variance**0.5)
             * self.random_walk_density
             / self.sampling_rate**0.5
         )

@@ -1,5 +1,3 @@
-import numpy as np
-
 from ..mathutils.vector_matrix import Matrix, Vector
 from ..prints.sensors_prints import _GnssReceiverPrints
 from .sensor import ScalarSensor
@@ -40,6 +38,7 @@ class GnssReceiver(ScalarSensor):
         altitude_accuracy=0,
         velocity_accuracy=0,
         name="GnssReceiver",
+        seed=None,
     ):
         """Initialize the Gnss Receiver sensor.
 
@@ -59,7 +58,7 @@ class GnssReceiver(ScalarSensor):
         name : str
             The name of the sensor. Default is "GnssReceiver".
         """
-        super().__init__(sampling_rate=sampling_rate, name=name)
+        super().__init__(sampling_rate=sampling_rate, name=name, seed=seed)
         self.position_accuracy = position_accuracy
         self.altitude_accuracy = altitude_accuracy
         self.velocity_accuracy = velocity_accuracy
@@ -96,12 +95,12 @@ class GnssReceiver(ScalarSensor):
         ) + Vector(u[3:6])
 
         # Apply accuracy to the position
-        x = np.random.normal(x, self.position_accuracy)
-        y = np.random.normal(y, self.position_accuracy)
-        z = np.random.normal(z, self.altitude_accuracy)
-        vx = np.random.normal(vx, self.velocity_accuracy)
-        vy = np.random.normal(vy, self.velocity_accuracy)
-        vz = np.random.normal(vz, self.velocity_accuracy)
+        x = self._rng.normal(x, self.position_accuracy)
+        y = self._rng.normal(y, self.position_accuracy)
+        z = self._rng.normal(z, self.altitude_accuracy)
+        vx = self._rng.normal(vx, self.velocity_accuracy)
+        vy = self._rng.normal(vy, self.velocity_accuracy)
+        vz = self._rng.normal(vz, self.velocity_accuracy)
 
         self.measurement = (x, y, z, vx, vy, vz)
         self._save_data((time, *self.measurement))
