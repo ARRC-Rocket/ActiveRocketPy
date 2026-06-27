@@ -9,6 +9,11 @@ on:
       - "pyproject.toml"
       - "requirements*"
 
+# cancel superseded runs on the same PR/ref to save runner minutes.
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 defaults:
   run:
     shell: bash
@@ -25,9 +30,10 @@ jobs:
       PYTHON: ${{ matrix.python-version }}
       MPLBACKEND: Agg
     steps:
-      - uses: actions/checkout@main
+      # pin to current stable major tags instead of @main.
+      - uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@main
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
@@ -62,7 +68,7 @@ jobs:
         run: pytest tests/acceptance --cov=rocketpy --cov-append --cov-report=xml
 
       - name: Upload coverage to artifacts
-        uses: actions/upload-artifact@main
+        uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: coverage.xml
@@ -73,11 +79,11 @@ jobs:
     needs: Pytest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@main
+      - uses: actions/checkout@v7
       - name: Download latest coverage report
-        uses: actions/download-artifact@main
+        uses: actions/download-artifact@v8
       - name: Upload to Codecov
-        uses: codecov/codecov-action@main
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: |

@@ -6,7 +6,8 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - uses: bubkoo/auto-assign@master
+      # pin to current stable major tag instead of @master.
+      - uses: bubkoo/auto-assign@v3
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONFIG_FILE: .github/auto-assign.yml
