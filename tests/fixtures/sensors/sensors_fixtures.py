@@ -62,6 +62,7 @@ def noisy_barometer():
         operating_temperature=25 + 273.15,
         temperature_bias=0.02,
         temperature_scale_factor=0.02,
+        seed=42,
     )
 
 
