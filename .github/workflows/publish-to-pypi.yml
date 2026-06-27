@@ -15,9 +15,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@main
+      # pin to current stable major tags instead of @main / @master.
+      - uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@main
+        uses: actions/setup-python@v6
         with:
           python-version: "3.10"
       - name: Install dependencies
@@ -27,7 +28,7 @@ jobs:
       - name: Build package
         run: python -m build
       - name: Publish package
-        uses: pypa/gh-action-pypi-publish@master
+        uses: pypa/gh-action-pypi-publish@v1.14.0
         with:
           user: __token__
           password: ${{ secrets.PYPI_API_TOKEN }}

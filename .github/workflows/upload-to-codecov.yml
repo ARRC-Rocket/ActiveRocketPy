@@ -18,7 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Upload coverage report to Codecov
-        uses: codecov/codecov-action@main
+        # pin to current stable major tag instead of @main.
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ inputs.codecov_token }}
           directory: ./coverage/reports/

@@ -26,9 +26,10 @@ jobs:
       PYTHON: ${{ matrix.python-version }}
       MPLBACKEND: Agg
     steps:
-      - uses: actions/checkout@main
+      # pin to current stable major tags instead of @main.
+      - uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@main
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
