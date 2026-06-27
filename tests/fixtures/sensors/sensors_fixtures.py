@@ -24,6 +24,7 @@ def noisy_rotated_accelerometer():
         cross_axis_sensitivity=0.5,
         consider_gravity=True,
         name="Accelerometer",
+        seed=42,
     )
 
 
@@ -46,6 +47,7 @@ def noisy_rotated_gyroscope():
         cross_axis_sensitivity=0.5,
         acceleration_sensitivity=[0, 0.0008, 0.0017],
         name="Gyroscope",
+        seed=42,
     )
 
 
