@@ -1,6 +1,6 @@
 [project]
 name = "activerocketpy"
-version = "1.12.0"
+version = "1.13.0"
 description="Advanced 6-DOF Rocket GNC simulation"
 dynamic = ["dependencies"]
 readme = "README.md"
@@ -33,6 +33,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = { find = { where = ["."], include = ["rocketpy*"] } }
 
+[tool.setuptools.package-data]
+"rocketpy.plots" = ["assets/*.stl"]
+
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
@@ -60,11 +63,17 @@ env-analysis = [
 ]
 
 monte-carlo = [
-    "imageio", 
+    "imageio",
     "multiprocess>=0.70",
     "statsmodels",
     "prettytable",
     "contextily>=1.0.0; python_version < '3.14'",
+]
+
+animation = [
+    "pyvista>=0.45",
+    "imageio",
+    "imageio-ffmpeg>=0.5"
 ]
 
 all = ["activerocketpy[env-analysis]", "activerocketpy[monte-carlo]"]

@@ -1,12 +1,54 @@
 import json
 import os
+from datetime import datetime
 
 import numpy as np
+import numpy.testing as npt
 import pytest
 import pytz
 
 from rocketpy import Environment
-from rocketpy.environment.tools import geodesic_to_utm, utm_to_geodesic
+from rocketpy.environment.tools import (
+    find_longitude_index,
+    geodesic_to_lambert_conformal,
+    geodesic_to_utm,
+    get_final_date_from_time_array,
+    get_initial_date_from_time_array,
+    get_pressure_levels_from_file,
+    pressure_unit_to_factor,
+    utm_to_geodesic,
+)
+from rocketpy.environment.weather_model_mapping import WeatherModelMapping
+
+
+class DummyLambertProjection:
+    """Minimal projection metadata container for unit tests."""
+
+    latitude_of_projection_origin = 40.0
+    longitude_of_central_meridian = 263.0
+    standard_parallel = np.array([30.0, 60.0])
+    earth_radius = 6371229.0
+
+
+@pytest.mark.parametrize(
+    "date_helper", [get_initial_date_from_time_array, get_final_date_from_time_array]
+)
+def test_time_array_date_helpers_convert_cftime_dates(
+    monkeypatch, date_helper, dummy_time_array, dummy_cftime_date
+):
+    """Convert NetCDF/cftime date objects to JSON-serializable datetimes."""
+
+    # Arrange
+    def fake_num2date(*_args, **_kwargs):
+        return dummy_cftime_date
+
+    monkeypatch.setattr("rocketpy.environment.tools.netCDF4.num2date", fake_num2date)
+
+    # Act
+    converted_date = date_helper(dummy_time_array)
+
+    # Assert
+    assert converted_date == datetime(2023, 6, 24, 9, 30, 15, 123456)
 
 
 @pytest.mark.parametrize(
@@ -109,6 +151,52 @@ def test_utm_to_geodesic_converts_coordinates():
     )
     assert np.isclose(lat, 32.99025, atol=1e-5)
     assert np.isclose(lon, -106.9750, atol=1e-5)
+
+
+def test_geodesic_to_lambert_conformal_projection_origin_maps_to_zero():
+    """Tests wrapped central meridian maps to coordinate origin in Lambert conformal."""
+    projection = DummyLambertProjection()
+
+    x, y = geodesic_to_lambert_conformal(
+        lat=projection.latitude_of_projection_origin,
+        lon=projection.longitude_of_central_meridian % 360,
+        projection_variable=projection,
+        x_units="m",
+    )
+
+    assert np.isclose(x, 0.0, atol=1e-8)
+    assert np.isclose(y, 0.0, atol=1e-8)
+
+
+def test_geodesic_to_lambert_conformal_km_units_scale_from_meters():
+    """Tests Lambert conformal conversion scales outputs from meters to km."""
+    projection = DummyLambertProjection()
+
+    x_meters, y_meters = geodesic_to_lambert_conformal(
+        lat=39.0,
+        lon=-96.0,
+        projection_variable=projection,
+        x_units="m",
+    )
+    x_km, y_km = geodesic_to_lambert_conformal(
+        lat=39.0,
+        lon=-96.0,
+        projection_variable=projection,
+        x_units="km",
+    )
+
+    assert np.isclose(x_km, x_meters / 1000.0, atol=1e-8)
+    assert np.isclose(y_km, y_meters / 1000.0, atol=1e-8)
+
+
+def test_find_longitude_index_accepts_lower_grid_boundary():
+    """Tests longitude equal to first grid value is accepted as in-range."""
+    lon_list = [0.0, 0.25, 0.5]
+
+    lon, lon_index = find_longitude_index(0.0, lon_list)
+
+    assert lon == 0.0
+    assert lon_index == 1
 
 
 @pytest.mark.parametrize(
@@ -229,17 +317,602 @@ def test_environment_export_environment_exports_valid_environment_json(
     assert exported_env["atmospheric_model_type"] == env.atmospheric_model_type
     assert exported_env["atmospheric_model_file"] is None
     assert exported_env["atmospheric_model_dict"] is None
-    assert exported_env["atmospheric_model_pressure_profile"] == str(
+    assert str(exported_env["atmospheric_model_pressure_profile"]) == str(
         env.pressure.get_source()
     )
-    assert exported_env["atmospheric_model_temperature_profile"] == str(
+    assert str(exported_env["atmospheric_model_temperature_profile"]) == str(
         env.temperature.get_source()
     )
-    assert exported_env["atmospheric_model_wind_velocity_x_profile"] == str(
+    assert str(exported_env["atmospheric_model_wind_velocity_x_profile"]) == str(
         env.wind_velocity_x.get_source()
     )
-    assert exported_env["atmospheric_model_wind_velocity_y_profile"] == str(
+    assert str(exported_env["atmospheric_model_wind_velocity_y_profile"]) == str(
         env.wind_velocity_y.get_source()
     )
 
     os.remove("environment.json")
+
+
+@pytest.mark.parametrize(
+    "atmospheric_model_type", ["windy", "forecast", "reanalysis", "ensemble"]
+)
+def test_environment_to_dict_from_dict_round_trip_preserves_weather_metadata(
+    example_plain_env, atmospheric_model_type
+):
+    """Round-trip weather-model environments without losing metadata.
+
+    Parameters
+    ----------
+    example_plain_env : rocketpy.Environment
+        Baseline environment used to build the serialized state.
+    atmospheric_model_type : str
+        Weather-model label stored in the serialized payload.
+    """
+    # Arrange
+    env = example_plain_env
+
+    weather_metadata = {
+        "atmospheric_model_type": atmospheric_model_type,
+        "atmospheric_model_file": None,
+        "atmospheric_model_dict": {"time": "time"},
+        "atmospheric_model_init_date": datetime(2024, 1, 1, 0),
+        "atmospheric_model_end_date": datetime(2024, 1, 1, 6),
+        "atmospheric_model_interval": 6,
+        "atmospheric_model_init_lat": -10.0,
+        "atmospheric_model_end_lat": 10.0,
+        "atmospheric_model_init_lon": -20.0,
+        "atmospheric_model_end_lon": 20.0,
+    }
+
+    ensemble_metadata = {
+        "level_ensemble": None,
+        "height_ensemble": None,
+        "temperature_ensemble": None,
+        "wind_u_ensemble": None,
+        "wind_v_ensemble": None,
+        "wind_heading_ensemble": None,
+        "wind_direction_ensemble": None,
+        "wind_speed_ensemble": None,
+        "num_ensemble_members": None,
+    }
+
+    if atmospheric_model_type == "ensemble":
+        ensemble_metadata.update(
+            {
+                "level_ensemble": np.array([1000.0, 900.0]),
+                "height_ensemble": np.array([[0.0, 1000.0], [0.0, 1000.0]]),
+                "temperature_ensemble": np.array([[288.15, 281.15], [288.15, 281.15]]),
+                "wind_u_ensemble": np.array([[2.0, 3.0], [2.0, 3.0]]),
+                "wind_v_ensemble": np.array([[4.0, 5.0], [4.0, 5.0]]),
+                "wind_heading_ensemble": np.array(
+                    [[26.565051, 30.963757], [26.565051, 30.963757]]
+                ),
+                "wind_direction_ensemble": np.array(
+                    [[206.565051, 210.963757], [206.565051, 210.963757]]
+                ),
+                "wind_speed_ensemble": np.array(
+                    [[4.472136, 5.830952], [4.472136, 5.830952]]
+                ),
+                "num_ensemble_members": 2,
+                "ensemble_member": 1,
+            }
+        )
+
+    for metadata in (weather_metadata, ensemble_metadata):
+        for attribute, value in metadata.items():
+            setattr(env, attribute, value)
+
+    env_dict = env.to_dict()
+
+    # The serialized payload should be self-contained and not depend on files.
+    assert "atmospheric_model_file" not in env_dict
+    assert "atmospheric_model_dict" not in env_dict
+
+    # Act
+    restored_env = Environment.from_dict(env_dict)
+
+    # Assert
+    assert restored_env.atmospheric_model_type == atmospheric_model_type
+    assert restored_env.atmospheric_model_init_date == env.atmospheric_model_init_date
+    assert restored_env.atmospheric_model_end_date == env.atmospheric_model_end_date
+    assert restored_env.atmospheric_model_interval == env.atmospheric_model_interval
+    assert restored_env.atmospheric_model_init_lat == env.atmospheric_model_init_lat
+    assert restored_env.atmospheric_model_end_lat == env.atmospheric_model_end_lat
+    assert restored_env.atmospheric_model_init_lon == env.atmospheric_model_init_lon
+    assert restored_env.atmospheric_model_end_lon == env.atmospheric_model_end_lon
+
+    if atmospheric_model_type == "ensemble":
+        npt.assert_allclose(restored_env.level_ensemble, env.level_ensemble)
+        npt.assert_allclose(restored_env.height_ensemble, env.height_ensemble)
+        assert restored_env.num_ensemble_members == env.num_ensemble_members
+        assert restored_env.ensemble_member == env.ensemble_member == 1
+
+
+class _DummyDataset:
+    """Small test double that mimics a netCDF dataset variables mapping."""
+
+    def __init__(self, variable_names):
+        self.variables = {name: object() for name in variable_names}
+
+
+def test_resolve_dictionary_keeps_compatible_mapping(example_plain_env):
+    """Keep the user-selected mapping when it already matches dataset keys."""
+    gfs_mapping = example_plain_env._Environment__weather_model_map.get("GFS")
+    dataset = _DummyDataset(
+        [
+            "time",
+            "lat",
+            "lon",
+            "isobaric",
+            "Temperature_isobaric",
+            "Geopotential_height_isobaric",
+            "u-component_of_wind_isobaric",
+            "v-component_of_wind_isobaric",
+        ]
+    )
+
+    resolved = example_plain_env._Environment__resolve_dictionary_for_dataset(
+        gfs_mapping, dataset
+    )
+
+    assert resolved is gfs_mapping
+
+
+def test_resolve_dictionary_falls_back_to_first_compatible_mapping(example_plain_env):
+    """Fallback to the first compatible built-in mapping for legacy-style files."""
+    thredds_gfs_mapping = example_plain_env._Environment__weather_model_map.get("GFS")
+    dataset = _DummyDataset(
+        [
+            "time",
+            "lat",
+            "lon",
+            "lev",
+            "tmpprs",
+            "hgtprs",
+            "ugrdprs",
+            "vgrdprs",
+        ]
+    )
+
+    resolved = example_plain_env._Environment__resolve_dictionary_for_dataset(
+        thredds_gfs_mapping, dataset
+    )
+
+    assert resolved == example_plain_env._Environment__weather_model_map.get(
+        "GFS_LEGACY"
+    )
+    assert resolved["level"] == "lev"
+    assert resolved["temperature"] == "tmpprs"
+    assert resolved["geopotential_height"] == "hgtprs"
+
+
+def test_weather_model_mapping_exposes_legacy_aliases():
+    """Legacy mapping names should be available and case-insensitive."""
+    mapping = WeatherModelMapping()
+
+    assert mapping.get("GFS_LEGACY")["temperature"] == "tmpprs"
+    assert mapping.get("gfs_legacy")["temperature"] == "tmpprs"
+
+
+def test_dictionary_matches_dataset_rejects_missing_projection(example_plain_env):
+    """Reject mapping when projection key is declared but variable is missing."""
+    # Arrange
+    mapping = {
+        "time": "time",
+        "latitude": "y",
+        "longitude": "x",
+        "projection": "LambertConformal_Projection",
+        "level": "isobaric",
+        "temperature": "Temperature_isobaric",
+        "geopotential_height": "Geopotential_height_isobaric",
+        "geopotential": None,
+        "u_wind": "u-component_of_wind_isobaric",
+        "v_wind": "v-component_of_wind_isobaric",
+    }
+    dataset = _DummyDataset(
+        [
+            "time",
+            "y",
+            "x",
+            "isobaric",
+            "Temperature_isobaric",
+            "Geopotential_height_isobaric",
+            "u-component_of_wind_isobaric",
+            "v-component_of_wind_isobaric",
+        ]
+    )
+
+    # Act
+    is_compatible = example_plain_env._Environment__dictionary_matches_dataset(
+        mapping, dataset
+    )
+
+    # Assert
+    assert not is_compatible
+
+
+def test_dictionary_matches_dataset_accepts_geopotential_only(example_plain_env):
+    """Accept mapping when geopotential exists and geopotential height is absent."""
+    # Arrange
+    mapping = {
+        "time": "time",
+        "latitude": "latitude",
+        "longitude": "longitude",
+        "level": "level",
+        "temperature": "t",
+        "geopotential_height": None,
+        "geopotential": "z",
+        "u_wind": "u",
+        "v_wind": "v",
+    }
+    dataset = _DummyDataset(
+        [
+            "time",
+            "latitude",
+            "longitude",
+            "level",
+            "t",
+            "z",
+            "u",
+            "v",
+        ]
+    )
+
+    # Act
+    is_compatible = example_plain_env._Environment__dictionary_matches_dataset(
+        mapping, dataset
+    )
+
+    # Assert
+    assert is_compatible
+
+
+def test_resolve_dictionary_warns_when_falling_back(example_plain_env):
+    """Emit warning and return a built-in mapping when fallback is required."""
+    # Arrange
+    incompatible_mapping = {
+        "time": "bad_time",
+        "latitude": "bad_lat",
+        "longitude": "bad_lon",
+        "level": "bad_level",
+        "temperature": "bad_temp",
+        "geopotential_height": "bad_height",
+        "geopotential": None,
+        "u_wind": "bad_u",
+        "v_wind": "bad_v",
+    }
+    dataset = _DummyDataset(
+        [
+            "time",
+            "lat",
+            "lon",
+            "isobaric",
+            "Temperature_isobaric",
+            "Geopotential_height_isobaric",
+            "u-component_of_wind_isobaric",
+            "v-component_of_wind_isobaric",
+        ]
+    )
+
+    # Act
+    with pytest.warns(UserWarning, match="Falling back to built-in mapping"):
+        resolved = example_plain_env._Environment__resolve_dictionary_for_dataset(
+            incompatible_mapping, dataset
+        )
+
+    # Assert
+    assert resolved == example_plain_env._Environment__weather_model_map.get("GFS")
+
+
+def test_resolve_dictionary_returns_original_when_no_compatible_builtin(
+    example_plain_env,
+):
+    """Return original mapping unchanged when no built-in mapping can match."""
+    # Arrange
+    original_mapping = {
+        "time": "a",
+        "latitude": "b",
+        "longitude": "c",
+        "level": "d",
+        "temperature": "e",
+        "geopotential_height": "f",
+        "geopotential": None,
+        "u_wind": "g",
+        "v_wind": "h",
+    }
+    dataset = _DummyDataset(["foo", "bar"])
+
+    # Act
+    resolved = example_plain_env._Environment__resolve_dictionary_for_dataset(
+        original_mapping, dataset
+    )
+
+    # Assert
+    assert resolved is original_mapping
+
+
+@pytest.mark.parametrize(
+    "model_type,file_name,error_message",
+    [
+        (
+            "Forecast",
+            "hiresw",
+            "HIRESW latest-model shortcut is currently unavailable",
+        ),
+        (
+            "Ensemble",
+            "gefs",
+            "GEFS latest-model shortcut is currently unavailable",
+        ),
+    ],
+)
+def test_set_atmospheric_model_blocks_deactivated_shortcuts_case_insensitive(
+    example_plain_env,
+    model_type,
+    file_name,
+    error_message,
+):
+    """Reject deactivated shortcut aliases regardless of input string case."""
+    # Arrange
+    environment = example_plain_env
+
+    # Act / Assert
+    with pytest.raises(ValueError, match=error_message):
+        environment.set_atmospheric_model(type=model_type, file=file_name)
+
+
+def test_validate_dictionary_uses_case_insensitive_file_shortcut(example_plain_env):
+    """Infer built-in mapping from file shortcut even when shortcut is lowercase."""
+    # Arrange
+    environment = example_plain_env
+
+    # Act
+    mapping = environment._Environment__validate_dictionary("gfs", None)
+
+    # Assert
+    assert mapping == environment._Environment__weather_model_map.get("GFS")
+
+
+def test_validate_dictionary_raises_type_error_for_invalid_dictionary(
+    example_plain_env,
+):
+    """Raise TypeError when no valid dictionary can be inferred."""
+    # Arrange
+    environment = example_plain_env
+
+    # Act / Assert
+    with pytest.raises(TypeError, match="Please specify a dictionary"):
+        environment._Environment__validate_dictionary("not_a_model", None)
+
+
+def test_set_atmospheric_model_normalizes_shortcut_case_for_forecast(example_plain_env):
+    """Normalize shortcut name before lookup and process forecast data."""
+    # Arrange
+    environment = example_plain_env
+
+    environment._Environment__atm_type_file_to_function_map = {
+        "forecast": {
+            "GFS": lambda: "fake-dataset",
+        },
+        "ensemble": {},
+    }
+
+    called_arguments = {}
+
+    def fake_process_forecast_reanalysis(dataset, dictionary, conversion_factor):
+        called_arguments["dataset"] = dataset
+        called_arguments["dictionary"] = dictionary
+        called_arguments["conversion_factr"] = conversion_factor
+
+    environment.process_forecast_reanalysis = fake_process_forecast_reanalysis
+
+    # Act
+    environment.set_atmospheric_model(type="Forecast", file="gfs")
+
+    # Assert
+    assert called_arguments["dataset"] == "fake-dataset"
+    assert called_arguments[
+        "dictionary"
+    ] == environment._Environment__weather_model_map.get("GFS")
+
+
+def test_set_atmospheric_model_raises_for_unknown_model_type(example_plain_env):
+    """Raise ValueError for unknown atmospheric model selector."""
+    # Arrange
+    environment = example_plain_env
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="Unknown model type"):
+        environment.set_atmospheric_model(type="unknown_type")
+
+
+def test_wind_heading_direction_wraparound_interpolation(example_plain_env):
+    """Test that wind heading and direction interpolation wraps around correctly
+    across the 360°/0° boundary when initialized with a 2D array.
+    """
+    # Create discrete points at 1000m and 1100m
+    # 350 deg at 1000m, 10 deg at 1100m.
+    # Midpoint should be 360 deg or 0 deg, NOT 180 deg.
+    heading_data = np.array([[1000, 350], [1100, 10]])
+    direction_data = np.array([[1000, 350], [1100, 10]])
+
+    example_plain_env._Environment__set_wind_heading_function(heading_data)
+    example_plain_env._Environment__set_wind_direction_function(direction_data)
+
+    # Evaluate at midpoint (1050m)
+    mid_heading = example_plain_env.wind_heading(1050)
+    mid_direction = example_plain_env.wind_direction(1050)
+
+    # Check that it's close to 0 or 360 (which is also 0 modulo 360)
+    assert np.isclose(mid_heading, 0.0) or np.isclose(mid_heading, 360.0)
+    assert np.isclose(mid_direction, 0.0) or np.isclose(mid_direction, 360.0)
+
+    # Also test another wrap-around case, e.g. 10 to 350
+    heading_data2 = np.array([[1000, 10], [1100, 350]])
+    example_plain_env._Environment__set_wind_heading_function(heading_data2)
+    mid_heading2 = example_plain_env.wind_heading(1050)
+    assert np.isclose(mid_heading2, 0.0) or np.isclose(mid_heading2, 360.0)
+
+
+@pytest.mark.parametrize("shortcut_name", ["AIGFS", "HRRR"])
+def test_forecast_shortcut_and_dictionary_are_case_insensitive(
+    monkeypatch, shortcut_name
+):
+    """Ensure forecast shortcuts and built-in dictionaries ignore input casing."""
+    # Arrange
+    env = Environment(date=(2026, 3, 17, 12), latitude=32.99, longitude=-106.97)
+
+    sentinel_dataset = object()
+    env._Environment__atm_type_file_to_function_map["forecast"][shortcut_name] = (
+        lambda: sentinel_dataset
+    )
+
+    captured = {}
+
+    def fake_process_forecast_reanalysis(file, dictionary, conversion_factor):
+        captured["file"] = file
+        captured["dictionary"] = dictionary
+        captured["conversion_factor"] = conversion_factor
+
+    monkeypatch.setattr(
+        env, "process_forecast_reanalysis", fake_process_forecast_reanalysis
+    )
+    monkeypatch.setattr(env, "calculate_density_profile", lambda: None)
+    monkeypatch.setattr(env, "calculate_speed_of_sound_profile", lambda: None)
+    monkeypatch.setattr(env, "calculate_dynamic_viscosity", lambda: None)
+
+    # Act
+    env.set_atmospheric_model(
+        type="forecast",
+        file=shortcut_name.lower(),
+        dictionary=shortcut_name.lower(),
+    )
+
+    # Assert
+    expected_dictionary = env._Environment__weather_model_map.get(shortcut_name)
+    assert captured["file"] is sentinel_dataset
+    assert captured["dictionary"] == expected_dictionary
+    assert env.atmospheric_model_file == shortcut_name
+    assert env.atmospheric_model_dict == expected_dictionary
+
+
+def test_weather_model_mapping_get_is_case_insensitive():
+    """Ensure built-in mapping names are resolved regardless of casing."""
+    mapping = WeatherModelMapping()
+    assert mapping.get("aigfs") == mapping.get("AIGFS")
+    assert mapping.get("ecmwf_v0") == mapping.get("ECMWF_v0")
+
+
+@pytest.mark.parametrize(
+    "model, expected_factor",
+    [
+        # NOMADS-GrADS models expose pressure on the 'lev' coordinate in hPa
+        # and MUST be scaled by 100 (regression: they were forced to factor 1).
+        ("GEFS", 100),
+        ("HIRESW", 100),
+        # THREDDS (UCAR) models expose pressure on 'isobaric' already in Pa.
+        ("GFS", 1),
+        ("NAM", 1),
+        ("RAP", 1),
+        ("HRRR", 1),
+        ("AIGFS", 1),
+    ],
+)
+def test_pressure_conversion_factor_autodetect_by_model(
+    example_plain_env, model, expected_factor
+):
+    """Regression test for the GEFS/HIRESW pressure-unit bug: NOMADS-GrADS
+    models report pressure in hPa (factor 100), THREDDS models in Pa (factor 1).
+    A wrong factor silently corrupts the whole atmospheric profile (100x)."""
+    factor = example_plain_env._Environment__determine_pressure_conversion_factor(
+        None, None, model
+    )
+    assert factor == expected_factor
+
+
+@pytest.mark.parametrize(
+    "model, expected_factor",
+    [("GEFS", 100), ("HIRESW", 100), ("GFS", 1), ("AIGFS", 1)],
+)
+def test_pressure_conversion_factor_autodetect_by_dictionary(
+    example_plain_env, model, expected_factor
+):
+    """Model shortcuts arriving via ``dictionary`` (the realistic download
+    path) must map to the same factor as when they arrive via ``file``."""
+    factor = example_plain_env._Environment__determine_pressure_conversion_factor(
+        None, model, None
+    )
+    assert factor == expected_factor
+
+
+@pytest.mark.parametrize(
+    "units, expected_levels",
+    [
+        ("mb", [100000.0, 85000.0]),
+        ("millibar", [100000.0, 85000.0]),
+        ("millibars", [100000.0, 85000.0]),
+        ("hPa", [100000.0, 85000.0]),
+        ("mbar", [100000.0, 85000.0]),
+        ("Pa", [1000.0, 850.0]),
+    ],
+)
+def test_get_pressure_levels_from_file_unit_synonyms(units, expected_levels):
+    """hPa/millibar unit synonyms auto-scale by 100; Pa by 1."""
+
+    class _Var:
+        def __init__(self, values, units):
+            self._values = np.asarray(values)
+            self.units = units
+
+        def __getitem__(self, key):
+            return self._values[key]
+
+    class _DS:
+        def __init__(self, var):
+            self.variables = {"lev": var}
+
+    dataset = _DS(_Var([1000.0, 850.0], units))
+    levels = get_pressure_levels_from_file(dataset, {"level": "lev"}, None)
+    npt.assert_allclose(levels, expected_levels)
+
+
+@pytest.mark.parametrize(
+    "unit, expected",
+    [
+        ("mbar", 100),
+        ("mb", 100),
+        ("hPa", 100),
+        ("millibar", 100),
+        ("millibars", 100),
+        ("hectopascal", 100),
+        ("Pa", 1),
+        ("pascal", 1),
+        ("parsecs", None),
+        ("", None),
+    ],
+)
+def test_pressure_unit_to_factor(unit, expected):
+    """The shared unit->factor helper: hPa synonyms ->100, Pa ->1, else None."""
+
+    assert pressure_unit_to_factor(unit) == expected
+
+
+@pytest.mark.parametrize("unit, expected", [("mb", 100), ("millibar", 100), ("Pa", 1)])
+def test_pressure_conversion_factor_explicit_unit_synonyms(
+    example_plain_env, unit, expected
+):
+    """An explicit string ``pressure_conversion_factor`` accepts the same unit
+    synonyms as file auto-detection (Copilot review consistency fix)."""
+    factor = example_plain_env._Environment__determine_pressure_conversion_factor(
+        unit, None, None
+    )
+    assert factor == expected
+
+
+def test_set_atmospheric_model_rejects_unknown_pressure_unit(example_plain_env):
+    """An unrecognized ``pressure_conversion_factor`` unit is rejected during
+    validation, before any file access."""
+    with pytest.raises(ValueError, match="pressure_conversion_factor"):
+        example_plain_env.set_atmospheric_model(
+            type="Forecast", file="dummy", pressure_conversion_factor="parsecs"
+        )

@@ -1,0 +1,83 @@
+name: Populate Changelog
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+jobs:
+  Changelog:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone RocketPy
+        uses: actions/checkout@v4
+        with:
+          repository: RocketPy-Team/RocketPy
+          ref: develop
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Update Changelog
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          # The PR title is untrusted input, so it is read from the environment
+          # inside Python rather than interpolated into a shell/sed program.
+          # This avoids both shell injection and sed breaking on special
+          # characters (\, /, &, newlines) in the title.
+          python - <<'PY'
+          import os
+
+          labels = os.environ.get("PR_LABELS", "")
+          title = os.environ["PR_TITLE"]
+          number = os.environ["PR_NUMBER"]
+
+          section, prefix = "### Added", "ENH"
+          if "Bug" in labels:
+              section, prefix = "### Fixed", "BUG"
+          elif "Refactor" in labels:
+              section, prefix = "### Changed", "MNT"
+          elif "Docs" in labels and "Git housekeeping" in labels:
+              section, prefix = "### Changed", "DOC"
+          elif "Tests" in labels:
+              section, prefix = "### Changed", "TST"
+          elif "Docs" in labels:
+              section, prefix = "### Added", "DOC"
+
+          entry = (
+              f"- {prefix}: {title} "
+              f"[#{number}](https://github.com/RocketPy-Team/RocketPy/pull/{number})\n"
+          )
+
+          with open("CHANGELOG.md", encoding="utf-8") as handle:
+              lines = handle.readlines()
+
+          for index, line in enumerate(lines):
+              if line.rstrip("\n") == section:
+                  insert_at = index + 1
+                  # Place the entry at the top of the list, after the single
+                  # blank line that follows the section header.
+                  if insert_at < len(lines) and lines[insert_at].strip() == "":
+                      insert_at += 1
+                  lines.insert(insert_at, entry)
+                  break
+          else:
+              raise SystemExit(f"Section {section!r} not found in CHANGELOG.md")
+
+          with open("CHANGELOG.md", "w", encoding="utf-8") as handle:
+              handle.writelines(lines)
+          PY
+
+      - name: Push Changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "DOC: Update Changelog for PR #${{ github.event.pull_request.number }}"
+          git push
