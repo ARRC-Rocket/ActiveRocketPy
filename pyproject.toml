@@ -72,6 +72,7 @@ monte-carlo = [
 
 animation = [
     "pyvista>=0.45",
+    "imageio",
     "imageio-ffmpeg>=0.5"
 ]
 

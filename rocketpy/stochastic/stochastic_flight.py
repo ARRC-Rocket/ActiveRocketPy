@@ -151,15 +151,21 @@ class StochasticFlight(StochasticModel):
         generated_dict = next(self.dict_generator())
         # TODO: maybe we should use generated_dict["rail_length"] instead
         return Flight(
+            rocket=self.obj.rocket,
             environment=self.obj.env,
             rail_length=self._randomize_rail_length(),
-            rocket=self.obj.rocket,
             inclination=generated_dict["inclination"],
             heading=generated_dict["heading"],
             initial_solution=self.initial_solution,
             terminate_on_apogee=self.terminate_on_apogee,
-            time_overshoot=self.time_overshoot,
             max_time=self.max_time,
-            max_time_step=self.max_time_step,
-            min_time_step=self.min_time_step,
+            max_time_step=self.obj.max_time_step,
+            min_time_step=self.obj.min_time_step,
+            rtol=self.obj.rtol,
+            atol=self.obj.atol,
+            time_overshoot=self.time_overshoot,
+            name=self.obj.name,
+            equations_of_motion=self.obj.equations_of_motion,
+            ode_solver=self.obj.ode_solver,
+            simulation_mode=self.obj.simulation_mode,
         )

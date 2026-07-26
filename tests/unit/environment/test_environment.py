@@ -14,6 +14,8 @@ from rocketpy.environment.tools import (
     geodesic_to_utm,
     get_final_date_from_time_array,
     get_initial_date_from_time_array,
+    get_pressure_levels_from_file,
+    pressure_unit_to_factor,
     utm_to_geodesic,
 )
 from rocketpy.environment.weather_model_mapping import WeatherModelMapping
@@ -378,14 +380,21 @@ def test_environment_to_dict_from_dict_round_trip_preserves_weather_metadata(
         ensemble_metadata.update(
             {
                 "level_ensemble": np.array([1000.0, 900.0]),
-                "height_ensemble": np.array([[0.0, 1000.0]]),
-                "temperature_ensemble": np.array([[288.15, 281.15]]),
-                "wind_u_ensemble": np.array([[2.0, 3.0]]),
-                "wind_v_ensemble": np.array([[4.0, 5.0]]),
-                "wind_heading_ensemble": np.array([[26.565051, 30.963757]]),
-                "wind_direction_ensemble": np.array([[206.565051, 210.963757]]),
-                "wind_speed_ensemble": np.array([[4.472136, 5.830952]]),
-                "num_ensemble_members": 1,
+                "height_ensemble": np.array([[0.0, 1000.0], [0.0, 1000.0]]),
+                "temperature_ensemble": np.array([[288.15, 281.15], [288.15, 281.15]]),
+                "wind_u_ensemble": np.array([[2.0, 3.0], [2.0, 3.0]]),
+                "wind_v_ensemble": np.array([[4.0, 5.0], [4.0, 5.0]]),
+                "wind_heading_ensemble": np.array(
+                    [[26.565051, 30.963757], [26.565051, 30.963757]]
+                ),
+                "wind_direction_ensemble": np.array(
+                    [[206.565051, 210.963757], [206.565051, 210.963757]]
+                ),
+                "wind_speed_ensemble": np.array(
+                    [[4.472136, 5.830952], [4.472136, 5.830952]]
+                ),
+                "num_ensemble_members": 2,
+                "ensemble_member": 1,
             }
         )
 
@@ -416,6 +425,7 @@ def test_environment_to_dict_from_dict_round_trip_preserves_weather_metadata(
         npt.assert_allclose(restored_env.level_ensemble, env.level_ensemble)
         npt.assert_allclose(restored_env.height_ensemble, env.height_ensemble)
         assert restored_env.num_ensemble_members == env.num_ensemble_members
+        assert restored_env.ensemble_member == env.ensemble_member == 1
 
 
 class _DummyDataset:
@@ -818,3 +828,91 @@ def test_pressure_conversion_factor_autodetect_by_model(
         None, None, model
     )
     assert factor == expected_factor
+
+
+@pytest.mark.parametrize(
+    "model, expected_factor",
+    [("GEFS", 100), ("HIRESW", 100), ("GFS", 1), ("AIGFS", 1)],
+)
+def test_pressure_conversion_factor_autodetect_by_dictionary(
+    example_plain_env, model, expected_factor
+):
+    """Model shortcuts arriving via ``dictionary`` (the realistic download
+    path) must map to the same factor as when they arrive via ``file``."""
+    factor = example_plain_env._Environment__determine_pressure_conversion_factor(
+        None, model, None
+    )
+    assert factor == expected_factor
+
+
+@pytest.mark.parametrize(
+    "units, expected_levels",
+    [
+        ("mb", [100000.0, 85000.0]),
+        ("millibar", [100000.0, 85000.0]),
+        ("millibars", [100000.0, 85000.0]),
+        ("hPa", [100000.0, 85000.0]),
+        ("mbar", [100000.0, 85000.0]),
+        ("Pa", [1000.0, 850.0]),
+    ],
+)
+def test_get_pressure_levels_from_file_unit_synonyms(units, expected_levels):
+    """hPa/millibar unit synonyms auto-scale by 100; Pa by 1."""
+
+    class _Var:
+        def __init__(self, values, units):
+            self._values = np.asarray(values)
+            self.units = units
+
+        def __getitem__(self, key):
+            return self._values[key]
+
+    class _DS:
+        def __init__(self, var):
+            self.variables = {"lev": var}
+
+    dataset = _DS(_Var([1000.0, 850.0], units))
+    levels = get_pressure_levels_from_file(dataset, {"level": "lev"}, None)
+    npt.assert_allclose(levels, expected_levels)
+
+
+@pytest.mark.parametrize(
+    "unit, expected",
+    [
+        ("mbar", 100),
+        ("mb", 100),
+        ("hPa", 100),
+        ("millibar", 100),
+        ("millibars", 100),
+        ("hectopascal", 100),
+        ("Pa", 1),
+        ("pascal", 1),
+        ("parsecs", None),
+        ("", None),
+    ],
+)
+def test_pressure_unit_to_factor(unit, expected):
+    """The shared unit->factor helper: hPa synonyms ->100, Pa ->1, else None."""
+
+    assert pressure_unit_to_factor(unit) == expected
+
+
+@pytest.mark.parametrize("unit, expected", [("mb", 100), ("millibar", 100), ("Pa", 1)])
+def test_pressure_conversion_factor_explicit_unit_synonyms(
+    example_plain_env, unit, expected
+):
+    """An explicit string ``pressure_conversion_factor`` accepts the same unit
+    synonyms as file auto-detection (Copilot review consistency fix)."""
+    factor = example_plain_env._Environment__determine_pressure_conversion_factor(
+        unit, None, None
+    )
+    assert factor == expected
+
+
+def test_set_atmospheric_model_rejects_unknown_pressure_unit(example_plain_env):
+    """An unrecognized ``pressure_conversion_factor`` unit is rejected during
+    validation, before any file access."""
+    with pytest.raises(ValueError, match="pressure_conversion_factor"):
+        example_plain_env.set_atmospheric_model(
+            type="Forecast", file="dummy", pressure_conversion_factor="parsecs"
+        )
