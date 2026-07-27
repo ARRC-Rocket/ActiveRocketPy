@@ -36,7 +36,9 @@ class Actuator(ABC):
         clamp : bool, optional
             Whether to clamp the actuator output. Default is True.
         actuator_initial_output : float, optional
-            Initial output of the actuator. Default is 0.0.
+            Initial output of the actuator. Default is 0.0. A value outside
+            actuator_range is treated the way the output setter treats one: it is
+            clamped when clamp is True, and warned about otherwise.
         actuator_time_constant : float, optional
             Time constant of the actuator, implemented as a discrete IIR filter. Default is None.
 
@@ -47,28 +49,41 @@ class Actuator(ABC):
 
         self.name = name
 
-        assert demand_rate > 0 or demand_rate is None, (
-            "demand_rate must be positive or None."
-        )
+        # These are argument checks rather than internal invariants, so they raise
+        # instead of asserting: python -O drops assert statements, and a negative
+        # time constant or rate limit would then be accepted in silence.
+        if demand_rate is not None and demand_rate <= 0:
+            raise ValueError("demand_rate must be positive or None.")
         self.demand_rate = demand_rate
 
-        assert actuator_range[0] <= actuator_range[1], (
-            "actuator_range[0] must be <= actuator_range[1]."
-        )
+        if actuator_range[0] > actuator_range[1]:
+            raise ValueError("actuator_range[0] must be <= actuator_range[1].")
         self.actuator_range = actuator_range
 
-        assert actuator_rate_limit is None or actuator_rate_limit >= 0, (
-            "actuator_rate_limit must be non-negative or None."
-        )
+        if actuator_rate_limit is not None and actuator_rate_limit < 0:
+            raise ValueError("actuator_rate_limit must be non-negative or None.")
         self.actuator_rate_limit = actuator_rate_limit
 
         self.clamp = clamp
 
-        assert actuator_time_constant is None or actuator_time_constant >= 0, (
-            "actuator_time_constant must be non-negative or None."
-        )
+        if actuator_time_constant is not None and actuator_time_constant < 0:
+            raise ValueError("actuator_time_constant must be non-negative or None.")
         self.actuator_time_constant = actuator_time_constant
         self._update_iir_coefficients()
+
+        # An initial output outside the range used to survive here and come back
+        # on every _reset(), even though the output setter would never let the
+        # actuator reach such a value afterwards. Treat it the way the setter
+        # treats any other out-of-range value, so the two agree.
+        if self.clamp:
+            actuator_initial_output = float(
+                np.clip(actuator_initial_output, actuator_range[0], actuator_range[1])
+            )
+        elif not actuator_range[0] <= actuator_initial_output <= actuator_range[1]:
+            warnings.warn(
+                f"Actuator '{name}' initial output {actuator_initial_output} "
+                f"is outside its range {actuator_range}."
+            )
 
         self.actuator_initial_output = actuator_initial_output
         self._actuator_output = actuator_initial_output

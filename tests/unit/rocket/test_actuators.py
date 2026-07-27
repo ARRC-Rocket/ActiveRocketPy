@@ -1,3 +1,6 @@
+import subprocess
+import sys
+
 import pytest
 
 from rocketpy.rocket.actuator.roll import RollActuator
@@ -456,26 +459,103 @@ class TestActuatorValidation:
     """Test suite for actuator parameter validation."""
 
     def test_invalid_demand_rate_negative(self):
-        """Test that negative demand rate raises assertion error."""
-        with pytest.raises(AssertionError):
+        """Test that negative demand rate is rejected."""
+        with pytest.raises(ValueError):
             RollActuator(demand_rate=-1)
 
     def test_invalid_range(self):
-        """Test that invalid range raises assertion error."""
-        with pytest.raises(AssertionError):
+        """Test that invalid range is rejected."""
+        with pytest.raises(ValueError):
             RollActuator(
                 max_roll_torque=-5
             )  # This creates range (5, -5) which is invalid
 
     def test_invalid_time_constant_negative(self):
-        """Test that negative time constant raises assertion error."""
-        with pytest.raises(AssertionError):
+        """Test that negative time constant is rejected."""
+        with pytest.raises(ValueError):
             ThrottleActuator(throttle_time_constant=-0.1)
 
     def test_invalid_rate_limit_negative(self):
-        """Test that negative rate limit raises assertion error."""
-        with pytest.raises(AssertionError):
+        """Test that negative rate limit is rejected."""
+        with pytest.raises(ValueError):
             ThrustVectorActuator(gimbal_rate_limit=-1.0)
+
+    def test_demand_rate_none_builds_a_continuous_actuator(self):
+        """None is the documented continuous-time mode and must be accepted.
+
+        The check used to read ``demand_rate > 0 or demand_rate is None``, and
+        Python evaluates the left operand first, so this raised TypeError and the
+        mode could not be constructed at all.
+        """
+        actuator = RollActuator(demand_rate=None)
+
+        assert actuator.demand_rate is None
+
+    @pytest.mark.parametrize(
+        "actuator_class, kwargs",
+        [
+            (RollActuator, {"demand_rate": -1}),
+            (RollActuator, {"max_roll_torque": -5}),
+            (ThrottleActuator, {"throttle_time_constant": -0.1}),
+            (ThrustVectorActuator, {"gimbal_rate_limit": -1.0}),
+        ],
+    )
+    def test_validation_survives_optimized_mode(self, actuator_class, kwargs):
+        """``python -O`` drops assert statements, so these must not be asserts.
+
+        Run in a subprocess because the flag is set at interpreter startup. Under
+        the old bare asserts every one of these was accepted in silence.
+        """
+        source = (
+            "from rocketpy.rocket.actuator import "
+            f"{actuator_class.__name__} as A; A(**{kwargs!r})"
+        )
+        result = subprocess.run(
+            [sys.executable, "-O", "-c", source],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode != 0, "invalid arguments were accepted under -O"
+        assert "ValueError" in result.stderr
+
+
+class TestActuatorInitialOutput:
+    """An actuator must not start outside its own range.
+
+    The output setter already refuses to leave the range, but the initial value
+    bypassed it and ``_reset()`` restored that same value, so a reset actuator
+    ended up somewhere the setter would never have put it.
+    """
+
+    def test_an_out_of_range_initial_value_is_clamped(self):
+        actuator = ThrottleActuator(throttle_range=(0.0, 1.0), initial_throttle=2.0)
+
+        assert actuator.actuator_output == 1.0
+        assert actuator.actuator_initial_output == 1.0
+
+    def test_the_clamped_value_survives_a_reset(self):
+        actuator = ThrottleActuator(throttle_range=(0.0, 1.0), initial_throttle=-3.0)
+        actuator.actuator_output = 0.5
+        actuator._reset()
+
+        assert actuator.actuator_output == 0.0
+
+    def test_a_value_inside_the_range_is_untouched(self):
+        actuator = ThrottleActuator(throttle_range=(0.0, 1.0), initial_throttle=0.25)
+
+        assert actuator.actuator_initial_output == 0.25
+
+    def test_without_clamping_it_warns_instead(self):
+        # clamp=False is the documented way to let an actuator report outside its
+        # range, so the initial value follows the setter and only warns.
+        with pytest.warns(UserWarning, match="outside its range"):
+            actuator = ThrottleActuator(
+                throttle_range=(0.0, 1.0), initial_throttle=2.0, clamp=False
+            )
+
+        assert actuator.actuator_initial_output == 2.0
 
 
 class TestActuatorWarnings:
