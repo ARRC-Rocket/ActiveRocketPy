@@ -79,9 +79,13 @@ def _range_or_raise(value, description):
         upper = float(upper)
     except (TypeError, ValueError) as error:
         raise ValueError(f"{description} endpoints must be numbers.") from error
-    # Written as a positive test because NaN fails every ordered comparison, so
-    # a range of two NaNs would slip through a check phrased as a negation.
-    if not lower <= upper:
+    # NaN is named rather than left to the ordering check below. It fails every
+    # ordered comparison, so `lower > upper` waves a pair of NaNs through and
+    # `not lower <= upper` catches them only as a side effect, which reads as a
+    # double negative to a reader and as C0117 to pylint.
+    if np.isnan(lower) or np.isnan(upper):
+        raise ValueError(f"{description} endpoints must not be NaN.")
+    if lower > upper:
         raise ValueError(f"{description}[0] must be <= {description}[1].")
     if lower == np.inf or upper == -np.inf:
         raise ValueError(
@@ -210,6 +214,19 @@ class Actuator(ABC):
                 self._alpha = 1.0 / (
                     1.0 + self.actuator_time_constant * self.demand_rate
                 )
+                # The product can still overflow where neither factor does, and
+                # 1 / inf is 0, which is a filter that never moves: measured,
+                # tau=1e200 with a rate of 1e200 leaves an actuator that ignores
+                # every command and holds its initial output for the whole
+                # flight. Silence is the wrong answer to that, and the bound is
+                # not near anything real. A time constant of 0.01 s at 100 Hz
+                # gives 0.5, and 10 s at 1000 Hz gives 1e-4.
+                if self._alpha <= 0.0:
+                    raise ValueError(
+                        f"Actuator '{self.name}' time constant "
+                        f"{self.actuator_time_constant} and demand rate "
+                        f"{self.demand_rate} give a filter that cannot respond."
+                    )
             else:
                 warnings.warn(
                     f"Actuator time constant currently only implemented on discrete controllers. '{self.name}' dynamics not applied."

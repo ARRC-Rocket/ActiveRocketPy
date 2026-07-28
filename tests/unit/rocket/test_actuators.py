@@ -872,3 +872,43 @@ class TestTheControllerAndTheActuatorShareOneSamplingRate:
         controller = calisto._controllers[-1]
 
         assert 1 / controller.sampling_rate == pytest.approx(0.01)
+
+
+class TestAFilterThatCannotRespondIsRefused:
+    """The rewritten coefficient removed one overflow and left a second.
+
+    ``tau * demand_rate`` can overflow where neither factor does, and ``1 / inf``
+    is 0, which is a filter that never moves. Measured: an actuator built that
+    way holds its initial output against every command for the whole flight.
+    """
+
+    @pytest.mark.parametrize(
+        "time_constant, demand_rate", [(1e200, 1e200), (1e308, 1e10), (1e154, 1e155)]
+    )
+    def test_a_coefficient_that_overflows_to_zero_is_refused(
+        self, time_constant, demand_rate
+    ):
+        with pytest.raises(ValueError, match="cannot respond"):
+            ThrottleActuator(
+                demand_rate=demand_rate,
+                throttle_time_constant=time_constant,
+                throttle_range=(0.0, 1.0),
+                initial_throttle=0.5,
+            )
+
+    @pytest.mark.parametrize(
+        "time_constant, demand_rate, expected",
+        [(0.01, 100.0, 0.5), (10.0, 1000.0, 1e-4)],
+    )
+    def test_a_slow_actuator_is_still_allowed(
+        self, time_constant, demand_rate, expected
+    ):
+        """The half that stops this being satisfied by refusing slow actuators.
+        A small coefficient is what a slow actuator is; only zero is broken."""
+        actuator = ThrottleActuator(
+            demand_rate=demand_rate,
+            throttle_time_constant=time_constant,
+            throttle_range=(0.0, 1.0),
+        )
+
+        assert actuator._alpha == pytest.approx(expected, rel=1e-3)
