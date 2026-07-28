@@ -2095,7 +2095,21 @@ class Rocket:
         _controller = _Controller(
             interactive_objects=thrust_vector_control,
             controller_function=controller_function,
-            sampling_rate=sampling_rate,
+            # The actuator's normalized rate, not the argument. The actuator
+            # runs its own validation and stores a float, so handing the
+            # controller the original leaves the two holding different types
+            # for one quantity: sampling_rate="100" gives the actuator 100.0
+            # and the controller "100", this call returns successfully, and the
+            # failure surfaces later in Flight at 1 / controller.sampling_rate,
+            # by which point the rocket is already half built.
+            #
+            # Read off the x axis because ThrustVectorActuator2D holds no
+            # demand_rate of its own. Its class docstring lists one, along with
+            # six other attributes it also never assigns, but __init__ only
+            # forwards the argument to the two axes. Both are built from that
+            # one argument, so either axis gives the same number, and reaching
+            # into .x is what Flight already does to reset this class.
+            sampling_rate=thrust_vector_control.x.demand_rate,
             initial_observed_variables=initial_observed_variables,
             name=controller_name,
         )
@@ -2228,7 +2242,8 @@ class Rocket:
         _controller = _Controller(
             interactive_objects=roll_control,
             controller_function=controller_function,
-            sampling_rate=sampling_rate,
+            # The actuator's normalized rate. See add_thrust_vector_control.
+            sampling_rate=roll_control.demand_rate,
             initial_observed_variables=initial_observed_variables,
             name=controller_name,
         )
@@ -2364,7 +2379,8 @@ class Rocket:
         _controller = _Controller(
             interactive_objects=throttle_control,
             controller_function=controller_function,
-            sampling_rate=sampling_rate,
+            # The actuator's normalized rate. See add_thrust_vector_control.
+            sampling_rate=throttle_control.demand_rate,
             initial_observed_variables=initial_observed_variables,
             name=controller_name,
         )

@@ -36,6 +36,9 @@ Attention: The newest changes should be on top -->
 
 ### Fixed
 
+- BUG: actuator argument validation reached the output through a range, a
+  derived filter coefficient and a controller [#19](https://github.com/ARRC-Rocket/ActiveRocketPy/pull/19)
+
 ## [v1.13.0] - 2026-07-21
 
 ### Added

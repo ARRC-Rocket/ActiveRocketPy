@@ -693,3 +693,182 @@ class TestActuatorWarnings:
         actuator.actuator_output = 15.0
         # Output should be clamped to range
         assert actuator.roll_torque == 10.0
+
+
+class TestARangeThatCannotClampIsRefused:
+    """The range was checked for ordering only, and stored by reference.
+
+    Both halves let a finite value become a non-finite stored output, which is
+    the one thing the validation around it exists to prevent. Measured before
+    the fix: ``(inf, inf)`` passed ``lower <= upper``, ``np.clip(0.5, inf, inf)``
+    stored ``inf``, and the next ordinary command reached
+    ``(1 - alpha) * inf``, which is ``0.0 * inf``, and stored NaN. ``_reset()``
+    put it back at the start of every later flight.
+    """
+
+    @pytest.mark.parametrize("limits", [(math.inf, math.inf), (-math.inf, -math.inf)])
+    def test_a_range_with_nothing_finite_in_it_is_refused(self, limits):
+        with pytest.raises(ValueError, match="clamp"):
+            ThrottleActuator(throttle_range=limits, initial_throttle=0.5)
+
+    def test_a_range_of_nans_is_refused(self):
+        """NaN fails every ordered comparison, so the ordering check catches it
+        only because that check is written as a positive test."""
+        with pytest.raises(ValueError):
+            ThrottleActuator(throttle_range=(math.nan, math.nan))
+
+    @pytest.mark.parametrize("limits", [(0.0,), (0.0, 1.0, 2.0), 1.0])
+    def test_a_range_that_is_not_a_pair_is_refused(self, limits):
+        with pytest.raises(ValueError):
+            ThrottleActuator(throttle_range=limits)
+
+    @pytest.mark.parametrize(
+        "limits",
+        [(-math.inf, math.inf), (0.0, math.inf), (-math.inf, 1.0), (0.0, 1.0)],
+    )
+    def test_a_range_that_can_clamp_still_builds(self, limits):
+        """The half that stops this being satisfied by refusing everything.
+
+        An infinite bound is how this class says "unbounded on that side", and
+        the base default really is ``(-inf, inf)``, so only a range with no
+        finite value on the clamping side may be refused.
+        """
+        actuator = ThrottleActuator(throttle_range=limits, initial_throttle=0.5)
+        actuator.throttle = 0.25
+
+        assert math.isfinite(actuator.throttle)
+
+    def test_mutating_the_range_passed_in_does_not_move_the_actuator(self):
+        """It was the caller's own list, so a validated invariant could be
+        edited away after the fact."""
+        limits = [0.0, 1.0]
+        actuator = ThrottleActuator(throttle_range=limits, initial_throttle=0.5)
+
+        limits[:] = [math.inf, math.inf]
+        actuator.throttle = 0.25
+
+        assert actuator.actuator_range == (0.0, 1.0)
+        assert actuator.throttle == 0.25
+
+
+class TestTheFilterCoefficientStaysFinite:
+    """``alpha`` is derived, and validating only the inputs left it unchecked.
+
+    ``Ts / (tau + Ts)`` with ``Ts = 1 / demand_rate`` forms an intermediate that
+    the arguments themselves never contain. Both arguments below are finite and
+    pass every check at the boundary.
+    """
+
+    def test_a_subnormal_demand_rate_does_not_give_a_nan_coefficient(self):
+        """Measured before the fix: ``1.0 / 5e-324`` is inf, ``inf / (1.0 + inf)``
+        is NaN, and the first finite command then stored NaN and stayed there."""
+        actuator = ThrottleActuator(
+            demand_rate=5e-324,
+            throttle_time_constant=1.0,
+            throttle_range=(0.0, 1.0),
+            initial_throttle=0.5,
+        )
+        actuator.throttle = 0.25
+
+        assert math.isfinite(actuator._alpha)
+        assert math.isfinite(actuator.throttle)
+
+    def test_a_huge_time_constant_does_not_pin_the_coefficient_to_zero(self):
+        """The other end of the same overflow. The denominator went infinite and
+        alpha came out 0, which freezes the actuator at its initial value; the
+        answer here is about 0.5."""
+        actuator = ThrottleActuator(
+            demand_rate=1e-308,
+            throttle_time_constant=1e308,
+            throttle_range=(0.0, 1.0),
+            initial_throttle=0.5,
+        )
+
+        assert actuator._alpha == pytest.approx(0.5)
+
+    @pytest.mark.parametrize(
+        "demand_rate, time_constant",
+        [(1e-3, 1e-6), (1.0, 1.0), (100.0, 0.05), (1e4, 1e3)],
+    )
+    def test_the_two_forms_agree_where_both_work(self, demand_rate, time_constant):
+        """So the rewrite is a rewrite and not a change of behaviour. Measured
+        over 2000 random pairs across these ranges: the largest difference is
+        2.2e-16."""
+        actuator = ThrottleActuator(
+            demand_rate=demand_rate,
+            throttle_time_constant=time_constant,
+            throttle_range=(0.0, 1.0),
+        )
+        demand_period = 1.0 / demand_rate
+
+        assert actuator._alpha == pytest.approx(
+            demand_period / (time_constant + demand_period), rel=1e-12
+        )
+
+
+def _no_op_controller(time, sampling_rate, state, state_history, observed, interactive):  # pylint: disable=unused-argument
+    """A controller that commands nothing, so these tests are about the wiring."""
+    return None
+
+
+class TestTheControllerAndTheActuatorShareOneSamplingRate:
+    """``add_*_control`` built the two halves from the same argument.
+
+    The actuator normalizes what it is given and stores a float. The controller
+    was handed the original object, so one quantity ended up held twice, in two
+    types. Nothing complained: the call returned a rocket that looked complete,
+    and the failure surfaced later inside Flight at
+    ``controller_time_step = 1 / controller.sampling_rate``, by which point the
+    actuator and the controller were already attached.
+
+    Passing the actuator's normalized value is the smaller of the two available
+    fixes. Refusing strings and bools outright is the other, and it is a wider
+    behaviour change than this needs.
+    """
+
+    # The third entry reaches through .x because ThrustVectorActuator2D keeps
+    # no demand_rate of its own, only the two axes it builds from the argument.
+    ADDERS = [
+        ("add_roll_control", "roll_control", {"max_roll_torque": 10.0}, False),
+        ("add_throttle_control", "throttle_control", {}, False),
+        (
+            "add_thrust_vector_control",
+            "thrust_vector_control",
+            {"max_gimbal_angle": 5.0},
+            True,
+        ),
+    ]
+
+    @staticmethod
+    def _rate_of(rocket, attribute, per_axis):
+        actuator = getattr(rocket, attribute)
+        return (actuator.x if per_axis else actuator).demand_rate
+
+    @pytest.mark.parametrize("adder, attribute, extra, per_axis", ADDERS)
+    @pytest.mark.parametrize("given", ["100", True, 100])
+    def test_both_halves_hold_the_same_normalized_value(
+        self, calisto, adder, attribute, extra, per_axis, given
+    ):
+        """``True`` is in here because ``float(True)`` is 1.0, so a bool reaches
+        the actuator as a rate and used to reach the controller as a bool."""
+        getattr(calisto, adder)(
+            controller_function=_no_op_controller, sampling_rate=given, **extra
+        )
+        rate = self._rate_of(calisto, attribute, per_axis)
+        controller = calisto._controllers[-1]
+
+        assert controller.sampling_rate == rate
+        assert type(controller.sampling_rate) is type(rate)
+
+    @pytest.mark.parametrize(
+        "adder, extra", [(adder, extra) for adder, _, extra, _ in ADDERS]
+    )
+    def test_the_controller_rate_is_usable_as_a_time_step(self, calisto, adder, extra):
+        """The exact expression Flight evaluates, which is where a string blew
+        up with a TypeError after the rocket had already been assembled."""
+        getattr(calisto, adder)(
+            controller_function=_no_op_controller, sampling_rate="100", **extra
+        )
+        controller = calisto._controllers[-1]
+
+        assert 1 / controller.sampling_rate == pytest.approx(0.01)
