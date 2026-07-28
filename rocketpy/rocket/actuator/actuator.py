@@ -52,21 +52,25 @@ class Actuator(ABC):
         # These are argument checks rather than internal invariants, so they raise
         # instead of asserting: python -O drops assert statements, and a negative
         # time constant or rate limit would then be accepted in silence.
-        if demand_rate is not None and demand_rate <= 0:
+        # Negating the positive predicate rather than inverting the comparison.
+        # Every ordered comparison against NaN is false, so `nan <= 0` is false
+        # and would have let it through, where the assert this replaces asked
+        # `nan > 0` and rejected it. Same for the three below.
+        if demand_rate is not None and not demand_rate > 0:
             raise ValueError("demand_rate must be positive or None.")
         self.demand_rate = demand_rate
 
-        if actuator_range[0] > actuator_range[1]:
+        if not actuator_range[0] <= actuator_range[1]:
             raise ValueError("actuator_range[0] must be <= actuator_range[1].")
         self.actuator_range = actuator_range
 
-        if actuator_rate_limit is not None and actuator_rate_limit < 0:
+        if actuator_rate_limit is not None and not actuator_rate_limit >= 0:
             raise ValueError("actuator_rate_limit must be non-negative or None.")
         self.actuator_rate_limit = actuator_rate_limit
 
         self.clamp = clamp
 
-        if actuator_time_constant is not None and actuator_time_constant < 0:
+        if actuator_time_constant is not None and not actuator_time_constant >= 0:
             raise ValueError("actuator_time_constant must be non-negative or None.")
         self.actuator_time_constant = actuator_time_constant
         self._update_iir_coefficients()
@@ -75,6 +79,11 @@ class Actuator(ABC):
         # on every _reset(), even though the output setter would never let the
         # actuator reach such a value afterwards. Treat it the way the setter
         # treats any other out-of-range value, so the two agree.
+        # NaN first: np.clip propagates it, so clamping would store NaN and
+        # _reset() would restore it, and there is no direction to clamp it
+        # towards in any case.
+        if not actuator_initial_output == actuator_initial_output:
+            raise ValueError(f"Actuator '{name}' initial output must be a number.")
         if self.clamp:
             actuator_initial_output = float(
                 np.clip(actuator_initial_output, actuator_range[0], actuator_range[1])
@@ -82,7 +91,8 @@ class Actuator(ABC):
         elif not actuator_range[0] <= actuator_initial_output <= actuator_range[1]:
             warnings.warn(
                 f"Actuator '{name}' initial output {actuator_initial_output} "
-                f"is outside its range {actuator_range}."
+                f"is outside its range {actuator_range}.",
+                stacklevel=2,
             )
 
         self.actuator_initial_output = actuator_initial_output

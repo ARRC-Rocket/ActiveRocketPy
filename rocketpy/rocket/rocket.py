@@ -2017,14 +2017,16 @@ class Rocket:
         sampling_rate : float
             The sampling rate of the controller function in Hertz (Hz). This
             means that the controller function will be called every
-            `1/sampling_rate` seconds.
+            `1/sampling_rate` seconds. Must be positive, or None for a
+            continuous-time controller called at every integration step.
         max_gimbal_angle : int, float
             Maximum gimbal angle in degrees. Both x and y gimbal
             angles are clamped to this range if clamp is True. Must be
             non-negative.
         gimbal_rate_limit : int, float
             Maximum gimbal rate in degrees per second. Both x and y gimbal
-            angles are limited to this rate of change. Default is None, no rate limit.
+            angles are limited to this rate of change. Must be non-negative.
+            Default is None, no rate limit.
         clamp : bool, optional
             If True, the simulation will clamp gimbal angles to the range
             [-max_gimbal_angle, max_gimbal_angle]. If False, a warning is
@@ -2033,10 +2035,12 @@ class Rocket:
             The initial gimbal angle in degrees. If a single value is provided,
             it is used for both x and y gimbal angles. If a tuple or list is
             provided, the first element is used for the x-axis and the second
-            for the y-axis. Default is 0.0.
+            for the y-axis. A value outside the range is clamped into it when
+            clamp is True, and warned about otherwise. Default is 0.0.
         gimbal_time_constant : float, optional
-            Time constant for the gimbal dynamics in seconds. If None, no
-            gimbal dynamics are applied. Default is None.
+            Time constant for the gimbal dynamics in seconds. Must be
+            non-negative. If None, no gimbal dynamics are applied. Default is
+            None.
         initial_observed_variables : list, optional
             A list of the initial values of the variables that the controller
             function manages. This list is used to initialize the
@@ -2152,7 +2156,8 @@ class Rocket:
         sampling_rate : float
             The sampling rate of the controller function in Hertz (Hz). This
             means that the controller function will be called every
-            `1/sampling_rate` seconds.
+            `1/sampling_rate` seconds. Must be positive, or None for a
+            continuous-time controller called at every integration step.
         max_roll_torque : int, float
             Maximum roll torque magnitude in N·m. Must be non-negative.
         torque_rate_limit : int, float
@@ -2163,9 +2168,12 @@ class Rocket:
             [-max_roll_torque, max_roll_torque]. If False, a warning is
             issued when roll torque exceeds the range. Default is True.
         initial_roll_torque : int, float
-            Initial roll torque in N·m. Default is 0.0.
+            Initial roll torque in N·m. A value outside the range is clamped
+            into it when clamp is True, and warned about otherwise. Default is
+            0.0.
         roll_torque_time_constant : float, optional
-            Time constant for the roll torque dynamics in seconds. Default is None, no dynamics are applied.
+            Time constant for the roll torque dynamics in seconds. Must be
+            non-negative. Default is None, no dynamics are applied.
         initial_observed_variables : list, optional
             A list of the initial values of the variables that the controller
             function manages. This list is used to initialize the
@@ -2281,7 +2289,8 @@ class Rocket:
         sampling_rate : float
             The sampling rate of the controller function in Hertz (Hz). This
             means that the controller function will be called every
-            `1/sampling_rate` seconds.
+            `1/sampling_rate` seconds. Must be positive, or None for a
+            continuous-time controller called at every integration step.
         throttle_range : tuple, optional
             A tuple containing the minimum and maximum throttle values. Must be in the range [0, 1]. Default is (0.0, 1.0).
         throttle_rate_limit : float, optional
@@ -2292,11 +2301,13 @@ class Rocket:
             [throttle_range[0], throttle_range[1]]. If False, a warning is issued when
             throttle values exceed the range. Default is True.
         initial_throttle : float, optional
-            Initial throttle value at the start of the simulation. Must be within
-            the range [throttle_range[0], throttle_range[1]]. Default is 1.0.
+            Initial throttle value at the start of the simulation. A value
+            outside [throttle_range[0], throttle_range[1]] is clamped into the
+            range when clamp is True, and warned about otherwise. Default is
+            1.0.
         throttle_time_constant : float, optional
-            Time constant for the throttle actuator dynamics in seconds.
-            If None, no actuator dynamics are applied.
+            Time constant for the throttle actuator dynamics in seconds. Must be
+            non-negative. If None, no actuator dynamics are applied.
         initial_observed_variables : list, optional
             A list of the initial values of the variables that the controller
             function manages. This list is used to initialize the

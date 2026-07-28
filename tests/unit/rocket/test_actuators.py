@@ -1,3 +1,4 @@
+import math
 import subprocess
 import sys
 
@@ -455,30 +456,89 @@ class TestActuatorDynamics:
         assert initial_output < filtered_output < 1.0
 
 
+NAN = float("nan")
+
+
+def _as_source(value):
+    """Render a value as source the ``-O`` subprocess can evaluate.
+
+    ``repr`` is almost enough, except that it renders NaN as the bare name
+    ``nan``, which the subprocess does not have bound. Left as ``repr`` the NaN
+    cases died on NameError, and a test that only checked the return code would
+    have called that a pass.
+    """
+    if isinstance(value, float) and math.isnan(value):
+        return 'float("nan")'
+    if isinstance(value, tuple):
+        return "(" + ", ".join(_as_source(item) for item in value) + ",)"
+    return repr(value)
+
+
+# One table, walked twice: once in-process for the message, once under ``-O``.
+# Keeping them in step is the point. An argument that is only rejected in the
+# default interpreter is not rejected, because the checks these replaced were
+# asserts and asserts are what ``-O`` removes.
+#
+# Each entry names the message it expects, so a case cannot pass on some other
+# argument's check. Every NaN case is here because NaN fails every ordered
+# comparison: `nan <= 0` is false just as `nan > 0` is, so a check written as the
+# inverted comparison accepts it while the assert it replaces rejected it.
+INVALID_ARGUMENTS = [
+    (RollActuator, {"demand_rate": -1}, "demand_rate"),
+    (RollActuator, {"demand_rate": 0}, "demand_rate"),
+    (RollActuator, {"demand_rate": NAN}, "demand_rate"),
+    (RollActuator, {"max_roll_torque": -5}, "actuator_range"),
+    (ThrottleActuator, {"throttle_range": (NAN, 1.0)}, "actuator_range"),
+    (ThrottleActuator, {"throttle_range": (0.0, NAN)}, "actuator_range"),
+    (ThrustVectorActuator, {"gimbal_rate_limit": -1.0}, "rate_limit"),
+    (ThrustVectorActuator, {"gimbal_rate_limit": NAN}, "rate_limit"),
+    (ThrottleActuator, {"throttle_time_constant": -0.1}, "time_constant"),
+    (ThrottleActuator, {"throttle_time_constant": NAN}, "time_constant"),
+    (ThrottleActuator, {"initial_throttle": NAN}, "initial output"),
+    # clamp is what would otherwise absorb an out-of-range initial value, and
+    # np.clip returns NaN for NaN, so both settings have to refuse it.
+    (ThrottleActuator, {"initial_throttle": NAN, "clamp": False}, "initial output"),
+]
+INVALID_IDS = [
+    f"{cls.__name__}-{'-'.join(kwargs)}-{'clamped' if kwargs.get('clamp', True) else 'unclamped'}"
+    for cls, kwargs, _ in INVALID_ARGUMENTS
+]
+
+
 class TestActuatorValidation:
     """Test suite for actuator parameter validation."""
 
-    def test_invalid_demand_rate_negative(self):
-        """Test that negative demand rate is rejected."""
-        with pytest.raises(ValueError):
-            RollActuator(demand_rate=-1)
+    @pytest.mark.parametrize(
+        "actuator_class, kwargs, message", INVALID_ARGUMENTS, ids=INVALID_IDS
+    )
+    def test_invalid_arguments_are_rejected(self, actuator_class, kwargs, message):
+        with pytest.raises(ValueError, match=message):
+            actuator_class(**kwargs)
 
-    def test_invalid_range(self):
-        """Test that invalid range is rejected."""
-        with pytest.raises(ValueError):
-            RollActuator(
-                max_roll_torque=-5
-            )  # This creates range (5, -5) which is invalid
+    @pytest.mark.parametrize(
+        "actuator_class, kwargs, message", INVALID_ARGUMENTS, ids=INVALID_IDS
+    )
+    def test_validation_survives_optimized_mode(self, actuator_class, kwargs, message):
+        """``python -O`` drops assert statements, so these must not be asserts.
 
-    def test_invalid_time_constant_negative(self):
-        """Test that negative time constant is rejected."""
-        with pytest.raises(ValueError):
-            ThrottleActuator(throttle_time_constant=-0.1)
+        Run in a subprocess because the flag is set at interpreter startup. Under
+        the old bare asserts every one of these was accepted in silence.
+        """
+        arguments = ", ".join(f"{k}={_as_source(v)}" for k, v in kwargs.items())
+        source = (
+            "from rocketpy.rocket.actuator import "
+            f"{actuator_class.__name__} as A; A({arguments})"
+        )
+        result = subprocess.run(
+            [sys.executable, "-O", "-c", source],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
-    def test_invalid_rate_limit_negative(self):
-        """Test that negative rate limit is rejected."""
-        with pytest.raises(ValueError):
-            ThrustVectorActuator(gimbal_rate_limit=-1.0)
+        assert result.returncode != 0, "invalid arguments were accepted under -O"
+        assert "ValueError" in result.stderr
+        assert message in result.stderr
 
     def test_demand_rate_none_builds_a_continuous_actuator(self):
         """None is the documented continuous-time mode and must be accepted.
@@ -494,31 +554,25 @@ class TestActuatorValidation:
     @pytest.mark.parametrize(
         "actuator_class, kwargs",
         [
-            (RollActuator, {"demand_rate": -1}),
-            (RollActuator, {"max_roll_torque": -5}),
-            (ThrottleActuator, {"throttle_time_constant": -0.1}),
-            (ThrustVectorActuator, {"gimbal_rate_limit": -1.0}),
+            (RollActuator, {"torque_rate_limit": 0.0}),
+            (ThrottleActuator, {"throttle_time_constant": 0.0}),
+            (ThrustVectorActuator, {"gimbal_rate_limit": 0.0}),
         ],
     )
-    def test_validation_survives_optimized_mode(self, actuator_class, kwargs):
-        """``python -O`` drops assert statements, so these must not be asserts.
+    def test_zero_is_accepted_where_the_bound_is_non_negative(
+        self, actuator_class, kwargs
+    ):
+        """Zero is on the legal side of every non-negative bound.
 
-        Run in a subprocess because the flag is set at interpreter startup. Under
-        the old bare asserts every one of these was accepted in silence.
+        Worth its own case because the fix moved these from ``x < 0`` to
+        ``not x >= 0``, and an off-by-one there would turn the documented "no
+        dynamics" and "no rate limit" settings into errors. A zero rate limit
+        does freeze the actuator, but that is the caller's business, and the
+        constructor is not where that is decided.
         """
-        source = (
-            "from rocketpy.rocket.actuator import "
-            f"{actuator_class.__name__} as A; A(**{kwargs!r})"
-        )
-        result = subprocess.run(
-            [sys.executable, "-O", "-c", source],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        actuator = actuator_class(**kwargs)
 
-        assert result.returncode != 0, "invalid arguments were accepted under -O"
-        assert "ValueError" in result.stderr
+        assert actuator is not None
 
 
 class TestActuatorInitialOutput:
@@ -556,6 +610,26 @@ class TestActuatorInitialOutput:
             )
 
         assert actuator.actuator_initial_output == 2.0
+
+    def test_the_warning_is_not_blamed_on_the_actuator_module(self):
+        """``pytest.warns`` reads the message, and the message is not the whole
+        warning. Without a stacklevel the report points at the ``warnings.warn``
+        line inside ``actuator.py``, which is the same line for every caller, so
+        ``-W`` filters keyed on a module and the printed location are both
+        useless.
+
+        Asserting the negative rather than a specific file because the warning is
+        raised in a base ``__init__`` reached through ``super()``, so no single
+        stacklevel lands on user code for every actuator: 2 reaches the concrete
+        subclass, and the dual-axis actuator adds another frame on top of that.
+        Not blaming the base module is the part that holds for all of them.
+        """
+        with pytest.warns(UserWarning, match="outside its range") as record:
+            ThrottleActuator(
+                throttle_range=(0.0, 1.0), initial_throttle=2.0, clamp=False
+            )
+
+        assert not record[0].filename.endswith("actuator.py")
 
 
 class TestActuatorWarnings:
