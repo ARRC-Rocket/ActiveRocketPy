@@ -457,18 +457,19 @@ class TestActuatorDynamics:
 
 
 NAN = float("nan")
+INF = float("inf")
 
 
 def _as_source(value):
     """Render a value as source the ``-O`` subprocess can evaluate.
 
     ``repr`` is almost enough, except that it renders NaN as the bare name
-    ``nan``, which the subprocess does not have bound. Left as ``repr`` the NaN
-    cases died on NameError, and a test that only checked the return code would
-    have called that a pass.
+    ``nan`` and infinity as ``inf``, neither of which the subprocess has bound.
+    Left as ``repr`` those cases died on NameError, and a test that only checked
+    the return code would have called that a pass.
     """
-    if isinstance(value, float) and math.isnan(value):
-        return 'float("nan")'
+    if isinstance(value, float) and not math.isfinite(value):
+        return f'float("{value}")'
     if isinstance(value, tuple):
         return "(" + ", ".join(_as_source(item) for item in value) + ",)"
     return repr(value)
@@ -498,11 +499,55 @@ INVALID_ARGUMENTS = [
     # clamp is what would otherwise absorb an out-of-range initial value, and
     # np.clip returns NaN for NaN, so both settings have to refuse it.
     (ThrottleActuator, {"initial_throttle": NAN, "clamp": False}, "initial output"),
+    # Infinity was never named by the comparisons. An actuator cannot start at
+    # one, and clamping would quietly turn it into a range endpoint.
+    (ThrottleActuator, {"initial_throttle": INF}, "initial output"),
+    (RollActuator, {"demand_rate": INF}, "demand_rate"),
 ]
 INVALID_IDS = [
     f"{cls.__name__}-{'-'.join(kwargs)}-{'clamped' if kwargs.get('clamp', True) else 'unclamped'}"
     for cls, kwargs, _ in INVALID_ARGUMENTS
 ]
+
+
+class TestTheOutputSetterRefusesWhatTheConstructorDoes:
+    """The two used to disagree, and the setter is the one an agent writes to.
+
+    A NaN handed to the constructor was rejected; the same NaN handed to the
+    setter on the next timestep was stored. ``np.clip`` returns NaN for NaN, and
+    both range comparisons are false for NaN, so neither the clamped nor the
+    unclamped branch noticed.
+
+    BalloonPoppingChallenge assigns agent actions straight into these setters,
+    and a policy that goes unstable emits NaN, which from there reaches the
+    forces, the moments and the integrator state.
+    """
+
+    @pytest.mark.parametrize("clamp", [True, False], ids=["clamped", "unclamped"])
+    @pytest.mark.parametrize("value", [NAN, INF, -INF], ids=["nan", "inf", "-inf"])
+    def test_a_non_finite_command_is_refused(self, clamp, value):
+        actuator = ThrottleActuator(clamp=clamp)
+
+        with pytest.raises(ValueError, match="output"):
+            actuator.actuator_output = value
+
+    @pytest.mark.parametrize("clamp", [True, False], ids=["clamped", "unclamped"])
+    def test_an_ordinary_command_still_goes_through(self, clamp):
+        """Or refusing everything would satisfy the test above."""
+        actuator = ThrottleActuator(clamp=clamp)
+
+        actuator.actuator_output = 0.5
+
+        assert actuator.actuator_output == pytest.approx(0.5)
+
+    def test_the_stored_output_is_untouched_by_a_refused_command(self):
+        actuator = ThrottleActuator()
+        actuator.actuator_output = 0.5
+
+        with pytest.raises(ValueError):
+            actuator.actuator_output = NAN
+
+        assert actuator.actuator_output == pytest.approx(0.5)
 
 
 class TestActuatorValidation:

@@ -4,6 +4,49 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 
+def _finite_or_raise(value, description):
+    """Return ``value`` as a float, refusing anything that is not finite.
+
+    A positive test on the value rather than a negated comparison. NaN fails
+    every ordered comparison, so a check written as ``value <= 0`` accepts it
+    where the assert it replaced rejected it; and the self-comparison that
+    caught it, ``not value == value``, reads as a redundant comparison to a
+    reader and to pylint alike.
+
+    This also settles two cases the comparisons never named. Infinity is
+    refused, since an actuator cannot start at or be driven to one, and a value
+    that is not a number at all is refused here rather than a few lines later
+    inside ``np.clip``.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{description} must be a number.") from error
+    if not np.isfinite(number):
+        raise ValueError(f"{description} must be a finite number.")
+    return number
+
+
+def _positive_or_none(value, description):
+    """An optional number that has to be finite and greater than zero."""
+    if value is None:
+        return None
+    number = _finite_or_raise(value, description)
+    if number <= 0:
+        raise ValueError(f"{description} must be positive or None.")
+    return number
+
+
+def _non_negative_or_none(value, description):
+    """An optional number that has to be finite and not below zero."""
+    if value is None:
+        return None
+    number = _finite_or_raise(value, description)
+    if number < 0:
+        raise ValueError(f"{description} must be non-negative or None.")
+    return number
+
+
 class Actuator(ABC):
     """Abstract class used to define actuators.
 
@@ -52,38 +95,41 @@ class Actuator(ABC):
         # These are argument checks rather than internal invariants, so they raise
         # instead of asserting: python -O drops assert statements, and a negative
         # time constant or rate limit would then be accepted in silence.
-        # Negating the positive predicate rather than inverting the comparison.
-        # Every ordered comparison against NaN is false, so `nan <= 0` is false
-        # and would have let it through, where the assert this replaces asked
-        # `nan > 0` and rejected it. Same for the three below.
-        if demand_rate is not None and not demand_rate > 0:
-            raise ValueError("demand_rate must be positive or None.")
-        self.demand_rate = demand_rate
+        # Finite first, then the bound, so each check says one thing. Written
+        # as a negated comparison these accepted NaN, which fails every ordered
+        # comparison, and infinity, which passes them: a demand rate of infinity
+        # makes the sampling period zero, which drives the IIR coefficient to
+        # zero and freezes the output.
+        #
+        # The range endpoints are deliberately not put through this. The base
+        # default really is (-inf, inf), meaning an actuator with no range.
+        self.demand_rate = _positive_or_none(demand_rate, "demand_rate")
 
         if not actuator_range[0] <= actuator_range[1]:
             raise ValueError("actuator_range[0] must be <= actuator_range[1].")
         self.actuator_range = actuator_range
 
-        if actuator_rate_limit is not None and not actuator_rate_limit >= 0:
-            raise ValueError("actuator_rate_limit must be non-negative or None.")
-        self.actuator_rate_limit = actuator_rate_limit
+        self.actuator_rate_limit = _non_negative_or_none(
+            actuator_rate_limit, "actuator_rate_limit"
+        )
 
         self.clamp = clamp
 
-        if actuator_time_constant is not None and not actuator_time_constant >= 0:
-            raise ValueError("actuator_time_constant must be non-negative or None.")
-        self.actuator_time_constant = actuator_time_constant
+        self.actuator_time_constant = _non_negative_or_none(
+            actuator_time_constant, "actuator_time_constant"
+        )
         self._update_iir_coefficients()
 
         # An initial output outside the range used to survive here and come back
         # on every _reset(), even though the output setter would never let the
         # actuator reach such a value afterwards. Treat it the way the setter
         # treats any other out-of-range value, so the two agree.
-        # NaN first: np.clip propagates it, so clamping would store NaN and
-        # _reset() would restore it, and there is no direction to clamp it
-        # towards in any case.
-        if not actuator_initial_output == actuator_initial_output:
-            raise ValueError(f"Actuator '{name}' initial output must be a number.")
+        # Refused before clamping: np.clip propagates NaN, so clamping would
+        # store it and _reset() would restore it, and there is no direction to
+        # clamp it towards in any case.
+        actuator_initial_output = _finite_or_raise(
+            actuator_initial_output, f"Actuator '{name}' initial output"
+        )
         if self.clamp:
             actuator_initial_output = float(
                 np.clip(actuator_initial_output, actuator_range[0], actuator_range[1])
@@ -136,6 +182,18 @@ class Actuator(ABC):
         -------
         None
         """
+        # The same rule as the initial output, so the two agree. It used to
+        # reject a NaN handed to the constructor and accept one handed to the
+        # setter on the next timestep: np.clip returns NaN for NaN, and both
+        # range comparisons are false for NaN, so neither branch noticed and it
+        # was stored.
+        #
+        # This is the path an agent writes to. BalloonPoppingChallenge assigns
+        # its actions straight into these setters, and a policy that goes
+        # unstable emits NaN, which from here reaches the forces, the moments
+        # and the integrator state.
+        value = _finite_or_raise(value, f"Actuator '{self.name}' output")
+
         # Apply first-order IIR actuator dynamics
         value = self._alpha * value + (1 - self._alpha) * self._actuator_output
 

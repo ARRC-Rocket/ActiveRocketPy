@@ -2031,12 +2031,19 @@ class Rocket:
             If True, the simulation will clamp gimbal angles to the range
             [-max_gimbal_angle, max_gimbal_angle]. If False, a warning is
             issued when gimbal angles exceed the range. Default is True.
-        initial_gimbal_angle : int, float, tuple, list
-            The initial gimbal angle in degrees. If a single value is provided,
-            it is used for both x and y gimbal angles. If a tuple or list is
-            provided, the first element is used for the x-axis and the second
-            for the y-axis. A value outside the range is clamped into it when
-            clamp is True, and warned about otherwise. Default is 0.0.
+        initial_gimbal_angle : int, float
+            The initial gimbal angle in degrees, used for both the x and y
+            axes. A value outside the range is clamped into it when clamp is
+            True, and warned about otherwise. Default is 0.0.
+
+            A per-axis tuple or list was described here and has never been
+            implemented: ``ThrustVectorActuator2D`` hands the value it is given
+            to both single-axis actuators unchanged, and ``to_dict`` records
+            only the x-axis value, so an asymmetric pair could not survive a
+            round trip either. It used to be accepted and silently applied to
+            both axes; it now raises, because the initial output is converted
+            to a float. Corrected here rather than implemented, since the
+            feature belongs upstream rather than in this fork.
         gimbal_time_constant : float, optional
             Time constant for the gimbal dynamics in seconds. Must be
             non-negative. If None, no gimbal dynamics are applied. Default is
