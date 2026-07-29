@@ -61,14 +61,16 @@ jobs:
         run: pytest tests/integration --cov=rocketpy --cov-append
 
       - name: Run Acceptance Tests
-        run: pytest tests/acceptance --cov=rocketpy --cov-append --cov-report=xml
+        run: pytest tests/acceptance --cov=rocketpy --cov-append --cov-report=xml:coverage-${{ matrix.os }}-${{ matrix.python-version }}.xml
 
       - name: Upload coverage to artifacts
         uses: actions/upload-artifact@main
         with:
-          name: coverage
-          path: coverage.xml
-          overwrite: true
+          # One name per leg. Six legs sharing a name with overwrite deleted each
+          # other's artifact rather than merging, so five reports were discarded
+          # and the surviving one was whichever leg happened to finish last.
+          name: coverage-${{ matrix.os }}-${{ matrix.python-version }}
+          path: coverage-${{ matrix.os }}-${{ matrix.python-version }}.xml
           if-no-files-found: error
 
   CodecovUpload:
@@ -76,11 +78,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@main
-      - name: Download latest coverage report
+      - name: Download every coverage report
         uses: actions/download-artifact@main
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+          path: coverage-reports
+      - name: Refuse to upload nothing
+        # `ls` exits non-zero on no match. Without this the upload has nothing to
+        # send and still reports success, which is the failure being fixed here.
+        run: ls coverage-reports/*.xml
       - name: Upload to Codecov
         uses: codecov/codecov-action@main
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: |
-            coverage.xml
+          # A directory rather than a filename: there is one report per matrix
+          # leg now. The previous block literal passed "coverage.xml\n", which was
+          # not found, and only the fallback search made the upload work at all.
+          directory: coverage-reports
+          # Only fail when a token was there to use. Pull requests from forks get
+          # no secrets, and a contributor should not see red for that.
+          fail_ci_if_error: ${{ secrets.CODECOV_TOKEN != '' }}
