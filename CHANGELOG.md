@@ -36,6 +36,11 @@ Attention: The newest changes should be on top -->
 
 ### Fixed
 
+- BUG: actuator argument checks survive `python -O`, a non-finite command is
+  refused at the setter rather than reaching the integrator, and an
+  `add_*_control` call now hands the controller the same sampling rate the
+  actuator kept [#19](https://github.com/ARRC-Rocket/ActiveRocketPy/pull/19)
+
 ## [v1.13.0] - 2026-07-21
 
 ### Added

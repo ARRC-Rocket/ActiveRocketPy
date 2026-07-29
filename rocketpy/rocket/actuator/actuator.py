@@ -4,6 +4,71 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 
+def _finite_or_raise(value, description):
+    """Return ``value`` as a float, refusing anything that is not finite.
+
+    A positive test on the value rather than a negated comparison. NaN fails
+    every ordered comparison, so a check written as ``value <= 0`` accepts it
+    where the assert it replaced rejected it; and the self-comparison that
+    caught it, ``not value == value``, reads as a redundant comparison to a
+    reader and to pylint alike.
+
+    This also settles two cases the comparisons never named. Infinity is
+    refused, since an actuator cannot start at or be driven to one, and a value
+    that is not a number at all is refused here rather than a few lines later
+    inside ``np.clip``.
+
+    ``bool`` is refused with them. YAML reads ``yes`` and ``on`` as ``True``, and
+    ``float(True)`` is 1.0, so a sampling rate written that way became 1 Hz with
+    nothing said.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"{description} must be a number, not a boolean.")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(f"{description} must be a number.") from error
+    if not np.isfinite(number):
+        raise ValueError(f"{description} must be a finite number.")
+    return number
+
+
+def _positive_or_none(value, description):
+    """An optional number that has to be finite and greater than zero."""
+    if value is None:
+        return None
+    number = _finite_or_raise(value, description)
+    if number <= 0:
+        raise ValueError(f"{description} must be positive or None.")
+    return number
+
+
+def _non_negative_or_none(value, description):
+    """An optional number that has to be finite and not below zero."""
+    if value is None:
+        return None
+    number = _finite_or_raise(value, description)
+    if number < 0:
+        raise ValueError(f"{description} must be non-negative or None.")
+    return number
+
+
+def _two_numbers_or_raise(value, description):
+    """A pair of numbers. Infinite is allowed here: it means unbounded."""
+    try:
+        lower, upper = value
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{description} must be exactly two numbers.") from error
+    numbers = []
+    for endpoint, where in ((lower, 0), (upper, 1)):
+        # Not float(), which takes "0" and would leave a YAML string range half
+        # converted while the rest of the config kept its strings.
+        if isinstance(endpoint, bool) or not isinstance(endpoint, (int, float)):
+            raise ValueError(f"{description}[{where}] must be a number.")
+        numbers.append(float(endpoint))
+    return numbers[0], numbers[1]
+
+
 class Actuator(ABC):
     """Abstract class used to define actuators.
 
@@ -36,7 +101,9 @@ class Actuator(ABC):
         clamp : bool, optional
             Whether to clamp the actuator output. Default is True.
         actuator_initial_output : float, optional
-            Initial output of the actuator. Default is 0.0.
+            Initial output of the actuator. Default is 0.0. A value outside
+            actuator_range is treated the way the output setter treats one: it is
+            clamped when clamp is True, and warned about otherwise.
         actuator_time_constant : float, optional
             Time constant of the actuator, implemented as a discrete IIR filter. Default is None.
 
@@ -47,28 +114,74 @@ class Actuator(ABC):
 
         self.name = name
 
-        assert demand_rate > 0 or demand_rate is None, (
-            "demand_rate must be positive or None."
-        )
-        self.demand_rate = demand_rate
+        # These are argument checks rather than internal invariants, so they raise
+        # instead of asserting: python -O drops assert statements, and a negative
+        # time constant or rate limit would then be accepted in silence.
+        # Finite first, then the bound, so each check says one thing. Written
+        # as a negated comparison these accepted NaN, which fails every ordered
+        # comparison, and infinity, which passes them: a demand rate of infinity
+        # makes the sampling period zero, which drives the IIR coefficient to
+        # zero and freezes the output.
+        #
+        # The range endpoints are deliberately not put through this. The base
+        # default really is (-inf, inf), meaning an actuator with no range.
+        self.demand_rate = _positive_or_none(demand_rate, "demand_rate")
 
-        assert actuator_range[0] <= actuator_range[1], (
-            "actuator_range[0] must be <= actuator_range[1]."
-        )
-        self.actuator_range = actuator_range
+        # A range read out of a config file arrives as anything. Without the
+        # shape and number checks, three endpoints drop the third in silence and
+        # string endpoints fail inside np.clip with a ufunc loop error.
+        lower, upper = _two_numbers_or_raise(actuator_range, "actuator_range")
+        if not lower <= upper:
+            raise ValueError("actuator_range[0] must be <= actuator_range[1].")
+        self.actuator_range = (lower, upper)
+        actuator_range = self.actuator_range
 
-        assert actuator_rate_limit is None or actuator_rate_limit >= 0, (
-            "actuator_rate_limit must be non-negative or None."
+        self.actuator_rate_limit = _non_negative_or_none(
+            actuator_rate_limit, "actuator_rate_limit"
         )
-        self.actuator_rate_limit = actuator_rate_limit
 
         self.clamp = clamp
 
-        assert actuator_time_constant is None or actuator_time_constant >= 0, (
-            "actuator_time_constant must be non-negative or None."
+        self.actuator_time_constant = _non_negative_or_none(
+            actuator_time_constant, "actuator_time_constant"
         )
-        self.actuator_time_constant = actuator_time_constant
+
+        # Neither is implemented for a continuous actuator, and both were
+        # accepted with a warning. Asking for a 0.1 s lag and getting an
+        # instant response is worth stopping for rather than mentioning.
+        if self.demand_rate is None:
+            for option, given in (
+                ("actuator_rate_limit", self.actuator_rate_limit),
+                ("actuator_time_constant", self.actuator_time_constant),
+            ):
+                if given:
+                    raise ValueError(
+                        f"{option} needs a demand_rate: it is not applied to a "
+                        f"continuous actuator."
+                    )
+
         self._update_iir_coefficients()
+
+        # An initial output outside the range used to survive here and come back
+        # on every _reset(), even though the output setter would never let the
+        # actuator reach such a value afterwards. Treat it the way the setter
+        # treats any other out-of-range value, so the two agree.
+        # Refused before clamping: np.clip propagates NaN, so clamping would
+        # store it and _reset() would restore it, and there is no direction to
+        # clamp it towards in any case.
+        actuator_initial_output = _finite_or_raise(
+            actuator_initial_output, f"Actuator '{name}' initial output"
+        )
+        if self.clamp:
+            actuator_initial_output = float(
+                np.clip(actuator_initial_output, actuator_range[0], actuator_range[1])
+            )
+        elif not actuator_range[0] <= actuator_initial_output <= actuator_range[1]:
+            warnings.warn(
+                f"Actuator '{name}' initial output {actuator_initial_output} "
+                f"is outside its range {actuator_range}.",
+                stacklevel=2,
+            )
 
         self.actuator_initial_output = actuator_initial_output
         self._actuator_output = actuator_initial_output
@@ -82,9 +195,12 @@ class Actuator(ABC):
 
         if self.actuator_time_constant is not None and self.actuator_time_constant > 0:
             if self.demand_rate is not None:
-                demand_period = 1.0 / self.demand_rate
-                self._alpha = demand_period / (
-                    self.actuator_time_constant + demand_period
+                # Algebraically Ts / (tau + Ts) with Ts = 1 / demand_rate,
+                # written without forming Ts. One expression instead of two,
+                # and the two agree to 2.2e-16 over the range of time
+                # constants and rates a real actuator uses.
+                self._alpha = 1.0 / (
+                    1.0 + self.actuator_time_constant * self.demand_rate
                 )
             else:
                 warnings.warn(
@@ -111,6 +227,18 @@ class Actuator(ABC):
         -------
         None
         """
+        # The same rule as the initial output, so the two agree. It used to
+        # reject a NaN handed to the constructor and accept one handed to the
+        # setter on the next timestep: np.clip returns NaN for NaN, and both
+        # range comparisons are false for NaN, so neither branch noticed and it
+        # was stored.
+        #
+        # This is the path an agent writes to. BalloonPoppingChallenge assigns
+        # its actions straight into these setters, and a policy that goes
+        # unstable emits NaN, which from here reaches the forces, the moments
+        # and the integrator state.
+        value = _finite_or_raise(value, f"Actuator '{self.name}' output")
+
         # Apply first-order IIR actuator dynamics
         value = self._alpha * value + (1 - self._alpha) * self._actuator_output
 
