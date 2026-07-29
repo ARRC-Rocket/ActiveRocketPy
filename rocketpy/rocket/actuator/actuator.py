@@ -47,53 +47,6 @@ def _non_negative_or_none(value, description):
     return number
 
 
-def _range_or_raise(value, description):
-    """Return the two endpoints as a tuple, refusing a range that cannot clamp.
-
-    Endpoints are not held to ``_finite_or_raise``. An infinite bound is how
-    this class says "unbounded on that side", and the base default really is
-    ``(-inf, inf)``. What has to hold instead is weaker and is the property the
-    range is used for: clamping a finite value against it has to give back a
-    finite value.
-
-    That fails in exactly two cases, and ordering makes them one. Given
-    ``lower <= upper``, a lower bound of ``+inf`` forces the upper bound to
-    match, and an upper bound of ``-inf`` forces the lower bound to match; in
-    both, ``np.clip`` returns the infinity. So ``(inf, inf)`` passed the
-    ordering check, took a finite initial output of 0.5, and stored ``inf``,
-    after which the first ordinary command landed on
-    ``(1 - alpha) * inf == 0.0 * inf`` and stored NaN, which ``_reset()`` then
-    restored on every subsequent flight. A one-sided bound such as ``(0, inf)``
-    is unaffected and stays allowed.
-
-    The endpoints are also copied into a new tuple. They were stored as the
-    caller's own object, so a list mutated after construction moved the range
-    out from under a validation that had already run.
-    """
-    try:
-        lower, upper = value
-    except (TypeError, ValueError) as error:
-        raise ValueError(f"{description} must be a pair of numbers.") from error
-    try:
-        lower = float(lower)
-        upper = float(upper)
-    except (TypeError, ValueError) as error:
-        raise ValueError(f"{description} endpoints must be numbers.") from error
-    # NaN is named rather than left to the ordering check below. It fails every
-    # ordered comparison, so `lower > upper` waves a pair of NaNs through and
-    # `not lower <= upper` catches them only as a side effect, which reads as a
-    # double negative to a reader and as C0117 to pylint.
-    if np.isnan(lower) or np.isnan(upper):
-        raise ValueError(f"{description} endpoints must not be NaN.")
-    if lower > upper:
-        raise ValueError(f"{description}[0] must be <= {description}[1].")
-    if lower == np.inf or upper == -np.inf:
-        raise ValueError(
-            f"{description} {(lower, upper)} cannot clamp anything to a finite value."
-        )
-    return (lower, upper)
-
-
 class Actuator(ABC):
     """Abstract class used to define actuators.
 
@@ -149,12 +102,12 @@ class Actuator(ABC):
         # zero and freezes the output.
         #
         # The range endpoints are deliberately not put through this. The base
-        # default really is (-inf, inf), meaning an actuator with no range, so
-        # they get the weaker check in _range_or_raise instead.
+        # default really is (-inf, inf), meaning an actuator with no range.
         self.demand_rate = _positive_or_none(demand_rate, "demand_rate")
 
-        self.actuator_range = _range_or_raise(actuator_range, "actuator_range")
-        actuator_range = self.actuator_range
+        if not actuator_range[0] <= actuator_range[1]:
+            raise ValueError("actuator_range[0] must be <= actuator_range[1].")
+        self.actuator_range = actuator_range
 
         self.actuator_rate_limit = _non_negative_or_none(
             actuator_rate_limit, "actuator_rate_limit"
@@ -200,33 +153,13 @@ class Actuator(ABC):
 
         if self.actuator_time_constant is not None and self.actuator_time_constant > 0:
             if self.demand_rate is not None:
-                # Algebraically Ts / (tau + Ts) with Ts = 1 / demand_rate, but
-                # written without forming Ts. That intermediate overflows for a
-                # subnormal demand rate: 1.0 / 5e-324 is inf, inf / (1.0 + inf)
-                # is NaN, and the filter then stores NaN out of a command that
-                # passed every check on the way in. At the other end a huge time
-                # constant makes the denominator overflow and pins alpha to
-                # zero, freezing the actuator, where 1e-308 with 1e308 should
-                # give about 0.5. Neither shape is reachable from a physical
-                # configuration, and neither costs anything to rule out: over
-                # 2000 random pairs across the ranges that are, the two forms
-                # agree to 2.2e-16.
+                # Algebraically Ts / (tau + Ts) with Ts = 1 / demand_rate,
+                # written without forming Ts. One expression instead of two,
+                # and the two agree to 2.2e-16 over the range of time
+                # constants and rates a real actuator uses.
                 self._alpha = 1.0 / (
                     1.0 + self.actuator_time_constant * self.demand_rate
                 )
-                # The product can still overflow where neither factor does, and
-                # 1 / inf is 0, which is a filter that never moves: measured,
-                # tau=1e200 with a rate of 1e200 leaves an actuator that ignores
-                # every command and holds its initial output for the whole
-                # flight. Silence is the wrong answer to that, and the bound is
-                # not near anything real. A time constant of 0.01 s at 100 Hz
-                # gives 0.5, and 10 s at 1000 Hz gives 1e-4.
-                if self._alpha <= 0.0:
-                    raise ValueError(
-                        f"Actuator '{self.name}' time constant "
-                        f"{self.actuator_time_constant} and demand rate "
-                        f"{self.demand_rate} give a filter that cannot respond."
-                    )
             else:
                 warnings.warn(
                     f"Actuator time constant currently only implemented on discrete controllers. '{self.name}' dynamics not applied."

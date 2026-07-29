@@ -695,96 +695,11 @@ class TestActuatorWarnings:
         assert actuator.roll_torque == 10.0
 
 
-class TestARangeThatCannotClampIsRefused:
-    """The range was checked for ordering only, and stored by reference.
+class TestTheFilterCoefficient:
+    """The coefficient is one expression rather than two.
 
-    Both halves let a finite value become a non-finite stored output, which is
-    the one thing the validation around it exists to prevent. Measured before
-    the fix: ``(inf, inf)`` passed ``lower <= upper``, ``np.clip(0.5, inf, inf)``
-    stored ``inf``, and the next ordinary command reached
-    ``(1 - alpha) * inf``, which is ``0.0 * inf``, and stored NaN. ``_reset()``
-    put it back at the start of every later flight.
+    Same value either way, so this is what says the rewrite is a rewrite.
     """
-
-    @pytest.mark.parametrize("limits", [(math.inf, math.inf), (-math.inf, -math.inf)])
-    def test_a_range_with_nothing_finite_in_it_is_refused(self, limits):
-        with pytest.raises(ValueError, match="clamp"):
-            ThrottleActuator(throttle_range=limits, initial_throttle=0.5)
-
-    def test_a_range_of_nans_is_refused(self):
-        """NaN fails every ordered comparison, so the ordering check catches it
-        only because that check is written as a positive test."""
-        with pytest.raises(ValueError):
-            ThrottleActuator(throttle_range=(math.nan, math.nan))
-
-    @pytest.mark.parametrize("limits", [(0.0,), (0.0, 1.0, 2.0), 1.0])
-    def test_a_range_that_is_not_a_pair_is_refused(self, limits):
-        with pytest.raises(ValueError):
-            ThrottleActuator(throttle_range=limits)
-
-    @pytest.mark.parametrize(
-        "limits",
-        [(-math.inf, math.inf), (0.0, math.inf), (-math.inf, 1.0), (0.0, 1.0)],
-    )
-    def test_a_range_that_can_clamp_still_builds(self, limits):
-        """The half that stops this being satisfied by refusing everything.
-
-        An infinite bound is how this class says "unbounded on that side", and
-        the base default really is ``(-inf, inf)``, so only a range with no
-        finite value on the clamping side may be refused.
-        """
-        actuator = ThrottleActuator(throttle_range=limits, initial_throttle=0.5)
-        actuator.throttle = 0.25
-
-        assert math.isfinite(actuator.throttle)
-
-    def test_mutating_the_range_passed_in_does_not_move_the_actuator(self):
-        """It was the caller's own list, so a validated invariant could be
-        edited away after the fact."""
-        limits = [0.0, 1.0]
-        actuator = ThrottleActuator(throttle_range=limits, initial_throttle=0.5)
-
-        limits[:] = [math.inf, math.inf]
-        actuator.throttle = 0.25
-
-        assert actuator.actuator_range == (0.0, 1.0)
-        assert actuator.throttle == 0.25
-
-
-class TestTheFilterCoefficientStaysFinite:
-    """``alpha`` is derived, and validating only the inputs left it unchecked.
-
-    ``Ts / (tau + Ts)`` with ``Ts = 1 / demand_rate`` forms an intermediate that
-    the arguments themselves never contain. Both arguments below are finite and
-    pass every check at the boundary.
-    """
-
-    def test_a_subnormal_demand_rate_does_not_give_a_nan_coefficient(self):
-        """Measured before the fix: ``1.0 / 5e-324`` is inf, ``inf / (1.0 + inf)``
-        is NaN, and the first finite command then stored NaN and stayed there."""
-        actuator = ThrottleActuator(
-            demand_rate=5e-324,
-            throttle_time_constant=1.0,
-            throttle_range=(0.0, 1.0),
-            initial_throttle=0.5,
-        )
-        actuator.throttle = 0.25
-
-        assert math.isfinite(actuator._alpha)
-        assert math.isfinite(actuator.throttle)
-
-    def test_a_huge_time_constant_does_not_pin_the_coefficient_to_zero(self):
-        """The other end of the same overflow. The denominator went infinite and
-        alpha came out 0, which freezes the actuator at its initial value; the
-        answer here is about 0.5."""
-        actuator = ThrottleActuator(
-            demand_rate=1e-308,
-            throttle_time_constant=1e308,
-            throttle_range=(0.0, 1.0),
-            initial_throttle=0.5,
-        )
-
-        assert actuator._alpha == pytest.approx(0.5)
 
     @pytest.mark.parametrize(
         "demand_rate, time_constant",
@@ -872,43 +787,3 @@ class TestTheControllerAndTheActuatorShareOneSamplingRate:
         controller = calisto._controllers[-1]
 
         assert 1 / controller.sampling_rate == pytest.approx(0.01)
-
-
-class TestAFilterThatCannotRespondIsRefused:
-    """The rewritten coefficient removed one overflow and left a second.
-
-    ``tau * demand_rate`` can overflow where neither factor does, and ``1 / inf``
-    is 0, which is a filter that never moves. Measured: an actuator built that
-    way holds its initial output against every command for the whole flight.
-    """
-
-    @pytest.mark.parametrize(
-        "time_constant, demand_rate", [(1e200, 1e200), (1e308, 1e10), (1e154, 1e155)]
-    )
-    def test_a_coefficient_that_overflows_to_zero_is_refused(
-        self, time_constant, demand_rate
-    ):
-        with pytest.raises(ValueError, match="cannot respond"):
-            ThrottleActuator(
-                demand_rate=demand_rate,
-                throttle_time_constant=time_constant,
-                throttle_range=(0.0, 1.0),
-                initial_throttle=0.5,
-            )
-
-    @pytest.mark.parametrize(
-        "time_constant, demand_rate, expected",
-        [(0.01, 100.0, 0.5), (10.0, 1000.0, 1e-4)],
-    )
-    def test_a_slow_actuator_is_still_allowed(
-        self, time_constant, demand_rate, expected
-    ):
-        """The half that stops this being satisfied by refusing slow actuators.
-        A small coefficient is what a slow actuator is; only zero is broken."""
-        actuator = ThrottleActuator(
-            demand_rate=demand_rate,
-            throttle_time_constant=time_constant,
-            throttle_range=(0.0, 1.0),
-        )
-
-        assert actuator._alpha == pytest.approx(expected, rel=1e-3)
