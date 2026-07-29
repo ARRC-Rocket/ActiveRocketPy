@@ -17,10 +17,16 @@ def _finite_or_raise(value, description):
     refused, since an actuator cannot start at or be driven to one, and a value
     that is not a number at all is refused here rather than a few lines later
     inside ``np.clip``.
+
+    ``bool`` is refused with them. YAML reads ``yes`` and ``on`` as ``True``, and
+    ``float(True)`` is 1.0, so a sampling rate written that way became 1 Hz with
+    nothing said.
     """
+    if isinstance(value, bool):
+        raise ValueError(f"{description} must be a number, not a boolean.")
     try:
         number = float(value)
-    except (TypeError, ValueError) as error:
+    except (TypeError, ValueError, OverflowError) as error:
         raise ValueError(f"{description} must be a number.") from error
     if not np.isfinite(number):
         raise ValueError(f"{description} must be a finite number.")

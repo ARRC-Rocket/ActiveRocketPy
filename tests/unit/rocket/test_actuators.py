@@ -797,12 +797,10 @@ class TestTheControllerAndTheActuatorShareOneSamplingRate:
         return (actuator.x if per_axis else actuator).demand_rate
 
     @pytest.mark.parametrize("adder, attribute, extra, per_axis", ADDERS)
-    @pytest.mark.parametrize("given", ["100", True, 100])
+    @pytest.mark.parametrize("given", ["100", 100, 100.0])
     def test_both_halves_hold_the_same_normalized_value(
         self, calisto, adder, attribute, extra, per_axis, given
     ):
-        """``True`` is in here because ``float(True)`` is 1.0, so a bool reaches
-        the actuator as a rate and used to reach the controller as a bool."""
         getattr(calisto, adder)(
             controller_function=_no_op_controller, sampling_rate=given, **extra
         )
@@ -866,3 +864,25 @@ class TestAFailedReplacementLeavesTheRocketAlone:
 
         assert len(calisto._controllers) == 1
         assert calisto._controllers[0].sampling_rate == 50.0
+
+
+class TestABooleanIsNotARate:
+    """YAML reads `yes` and `on` as True, and float(True) is 1.0.
+
+    A sampling rate written that way became 1 Hz with nothing said, and an
+    earlier revision of this file pinned that as the contract.
+    """
+
+    @pytest.mark.parametrize(
+        "option",
+        ["demand_rate", "throttle_rate_limit", "throttle_time_constant"],
+    )
+    def test_a_boolean_is_refused(self, option):
+        with pytest.raises(ValueError, match="boolean"):
+            ThrottleActuator(**{option: True})
+
+    def test_an_integer_too_large_for_a_float_is_a_value_error(self):
+        """`float(10**400)` raises OverflowError, so the validator leaked a
+        different exception type than everything beside it."""
+        with pytest.raises(ValueError):
+            ThrottleActuator(demand_rate=10**400)
