@@ -1,3 +1,7 @@
+import math
+import subprocess
+import sys
+
 import pytest
 
 from rocketpy.rocket.actuator.roll import RollActuator
@@ -452,30 +456,225 @@ class TestActuatorDynamics:
         assert initial_output < filtered_output < 1.0
 
 
+NAN = float("nan")
+INF = float("inf")
+
+
+def _as_source(value):
+    """Render a value as source the ``-O`` subprocess can evaluate.
+
+    ``repr`` is almost enough, except that it renders NaN as the bare name
+    ``nan`` and infinity as ``inf``, neither of which the subprocess has bound.
+    Left as ``repr`` those cases died on NameError, and a test that only checked
+    the return code would have called that a pass.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return f'float("{value}")'
+    if isinstance(value, tuple):
+        return "(" + ", ".join(_as_source(item) for item in value) + ",)"
+    return repr(value)
+
+
+# One table, walked twice: once in-process for the message, once under ``-O``.
+# Keeping them in step is the point. An argument that is only rejected in the
+# default interpreter is not rejected, because the checks these replaced were
+# asserts and asserts are what ``-O`` removes.
+#
+# Each entry names the message it expects, so a case cannot pass on some other
+# argument's check. Every NaN case is here because NaN fails every ordered
+# comparison: `nan <= 0` is false just as `nan > 0` is, so a check written as the
+# inverted comparison accepts it while the assert it replaces rejected it.
+INVALID_ARGUMENTS = [
+    (RollActuator, {"demand_rate": -1}, "demand_rate"),
+    (RollActuator, {"demand_rate": 0}, "demand_rate"),
+    (RollActuator, {"demand_rate": NAN}, "demand_rate"),
+    (RollActuator, {"max_roll_torque": -5}, "actuator_range"),
+    (ThrottleActuator, {"throttle_range": (NAN, 1.0)}, "actuator_range"),
+    (ThrottleActuator, {"throttle_range": (0.0, NAN)}, "actuator_range"),
+    (ThrustVectorActuator, {"gimbal_rate_limit": -1.0}, "rate_limit"),
+    (ThrustVectorActuator, {"gimbal_rate_limit": NAN}, "rate_limit"),
+    (ThrottleActuator, {"throttle_time_constant": -0.1}, "time_constant"),
+    (ThrottleActuator, {"throttle_time_constant": NAN}, "time_constant"),
+    (ThrottleActuator, {"initial_throttle": NAN}, "initial output"),
+    # clamp is what would otherwise absorb an out-of-range initial value, and
+    # np.clip returns NaN for NaN, so both settings have to refuse it.
+    (ThrottleActuator, {"initial_throttle": NAN, "clamp": False}, "initial output"),
+    # Infinity was never named by the comparisons. An actuator cannot start at
+    # one, and clamping would quietly turn it into a range endpoint.
+    (ThrottleActuator, {"initial_throttle": INF}, "initial output"),
+    (RollActuator, {"demand_rate": INF}, "demand_rate"),
+]
+INVALID_IDS = [
+    f"{cls.__name__}-{'-'.join(kwargs)}-{'clamped' if kwargs.get('clamp', True) else 'unclamped'}"
+    for cls, kwargs, _ in INVALID_ARGUMENTS
+]
+
+
+class TestTheOutputSetterRefusesWhatTheConstructorDoes:
+    """The two used to disagree, and the setter is the one an agent writes to.
+
+    A NaN handed to the constructor was rejected; the same NaN handed to the
+    setter on the next timestep was stored. ``np.clip`` returns NaN for NaN, and
+    both range comparisons are false for NaN, so neither the clamped nor the
+    unclamped branch noticed.
+
+    BalloonPoppingChallenge assigns agent actions straight into these setters,
+    and a policy that goes unstable emits NaN, which from there reaches the
+    forces, the moments and the integrator state.
+    """
+
+    @pytest.mark.parametrize("clamp", [True, False], ids=["clamped", "unclamped"])
+    @pytest.mark.parametrize("value", [NAN, INF, -INF], ids=["nan", "inf", "-inf"])
+    def test_a_non_finite_command_is_refused(self, clamp, value):
+        actuator = ThrottleActuator(clamp=clamp)
+
+        with pytest.raises(ValueError, match="output"):
+            actuator.actuator_output = value
+
+    @pytest.mark.parametrize("clamp", [True, False], ids=["clamped", "unclamped"])
+    def test_an_ordinary_command_still_goes_through(self, clamp):
+        """Or refusing everything would satisfy the test above."""
+        actuator = ThrottleActuator(clamp=clamp)
+
+        actuator.actuator_output = 0.5
+
+        assert actuator.actuator_output == pytest.approx(0.5)
+
+    def test_the_stored_output_is_untouched_by_a_refused_command(self):
+        actuator = ThrottleActuator()
+        actuator.actuator_output = 0.5
+
+        with pytest.raises(ValueError):
+            actuator.actuator_output = NAN
+
+        assert actuator.actuator_output == pytest.approx(0.5)
+
+
 class TestActuatorValidation:
     """Test suite for actuator parameter validation."""
 
-    def test_invalid_demand_rate_negative(self):
-        """Test that negative demand rate raises assertion error."""
-        with pytest.raises(AssertionError):
-            RollActuator(demand_rate=-1)
+    @pytest.mark.parametrize(
+        "actuator_class, kwargs, message", INVALID_ARGUMENTS, ids=INVALID_IDS
+    )
+    def test_invalid_arguments_are_rejected(self, actuator_class, kwargs, message):
+        with pytest.raises(ValueError, match=message):
+            actuator_class(**kwargs)
 
-    def test_invalid_range(self):
-        """Test that invalid range raises assertion error."""
-        with pytest.raises(AssertionError):
-            RollActuator(
-                max_roll_torque=-5
-            )  # This creates range (5, -5) which is invalid
+    @pytest.mark.parametrize(
+        "actuator_class, kwargs, message", INVALID_ARGUMENTS, ids=INVALID_IDS
+    )
+    def test_validation_survives_optimized_mode(self, actuator_class, kwargs, message):
+        """``python -O`` drops assert statements, so these must not be asserts.
 
-    def test_invalid_time_constant_negative(self):
-        """Test that negative time constant raises assertion error."""
-        with pytest.raises(AssertionError):
-            ThrottleActuator(throttle_time_constant=-0.1)
+        Run in a subprocess because the flag is set at interpreter startup. Under
+        the old bare asserts every one of these was accepted in silence.
+        """
+        arguments = ", ".join(f"{k}={_as_source(v)}" for k, v in kwargs.items())
+        source = (
+            "from rocketpy.rocket.actuator import "
+            f"{actuator_class.__name__} as A; A({arguments})"
+        )
+        result = subprocess.run(
+            [sys.executable, "-O", "-c", source],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
-    def test_invalid_rate_limit_negative(self):
-        """Test that negative rate limit raises assertion error."""
-        with pytest.raises(AssertionError):
-            ThrustVectorActuator(gimbal_rate_limit=-1.0)
+        assert result.returncode != 0, "invalid arguments were accepted under -O"
+        assert "ValueError" in result.stderr
+        assert message in result.stderr
+
+    def test_demand_rate_none_builds_a_continuous_actuator(self):
+        """None is the documented continuous-time mode and must be accepted.
+
+        The check used to read ``demand_rate > 0 or demand_rate is None``, and
+        Python evaluates the left operand first, so this raised TypeError and the
+        mode could not be constructed at all.
+        """
+        actuator = RollActuator(demand_rate=None)
+
+        assert actuator.demand_rate is None
+
+    @pytest.mark.parametrize(
+        "actuator_class, kwargs",
+        [
+            (RollActuator, {"torque_rate_limit": 0.0}),
+            (ThrottleActuator, {"throttle_time_constant": 0.0}),
+            (ThrustVectorActuator, {"gimbal_rate_limit": 0.0}),
+        ],
+    )
+    def test_zero_is_accepted_where_the_bound_is_non_negative(
+        self, actuator_class, kwargs
+    ):
+        """Zero is on the legal side of every non-negative bound.
+
+        Worth its own case because the fix moved these from ``x < 0`` to
+        ``not x >= 0``, and an off-by-one there would turn the documented "no
+        dynamics" and "no rate limit" settings into errors. A zero rate limit
+        does freeze the actuator, but that is the caller's business, and the
+        constructor is not where that is decided.
+        """
+        actuator = actuator_class(**kwargs)
+
+        assert actuator is not None
+
+
+class TestActuatorInitialOutput:
+    """An actuator must not start outside its own range.
+
+    The output setter already refuses to leave the range, but the initial value
+    bypassed it and ``_reset()`` restored that same value, so a reset actuator
+    ended up somewhere the setter would never have put it.
+    """
+
+    def test_an_out_of_range_initial_value_is_clamped(self):
+        actuator = ThrottleActuator(throttle_range=(0.0, 1.0), initial_throttle=2.0)
+
+        assert actuator.actuator_output == 1.0
+        assert actuator.actuator_initial_output == 1.0
+
+    def test_the_clamped_value_survives_a_reset(self):
+        actuator = ThrottleActuator(throttle_range=(0.0, 1.0), initial_throttle=-3.0)
+        actuator.actuator_output = 0.5
+        actuator._reset()
+
+        assert actuator.actuator_output == 0.0
+
+    def test_a_value_inside_the_range_is_untouched(self):
+        actuator = ThrottleActuator(throttle_range=(0.0, 1.0), initial_throttle=0.25)
+
+        assert actuator.actuator_initial_output == 0.25
+
+    def test_without_clamping_it_warns_instead(self):
+        # clamp=False is the documented way to let an actuator report outside its
+        # range, so the initial value follows the setter and only warns.
+        with pytest.warns(UserWarning, match="outside its range"):
+            actuator = ThrottleActuator(
+                throttle_range=(0.0, 1.0), initial_throttle=2.0, clamp=False
+            )
+
+        assert actuator.actuator_initial_output == 2.0
+
+    def test_the_warning_is_not_blamed_on_the_actuator_module(self):
+        """``pytest.warns`` reads the message, and the message is not the whole
+        warning. Without a stacklevel the report points at the ``warnings.warn``
+        line inside ``actuator.py``, which is the same line for every caller, so
+        ``-W`` filters keyed on a module and the printed location are both
+        useless.
+
+        Asserting the negative rather than a specific file because the warning is
+        raised in a base ``__init__`` reached through ``super()``, so no single
+        stacklevel lands on user code for every actuator: 2 reaches the concrete
+        subclass, and the dual-axis actuator adds another frame on top of that.
+        Not blaming the base module is the part that holds for all of them.
+        """
+        with pytest.warns(UserWarning, match="outside its range") as record:
+            ThrottleActuator(
+                throttle_range=(0.0, 1.0), initial_throttle=2.0, clamp=False
+            )
+
+        assert not record[0].filename.endswith("actuator.py")
 
 
 class TestActuatorWarnings:
@@ -494,3 +693,196 @@ class TestActuatorWarnings:
         actuator.actuator_output = 15.0
         # Output should be clamped to range
         assert actuator.roll_torque == 10.0
+
+
+class TestTheFilterCoefficient:
+    """The coefficient is one expression rather than two.
+
+    Same value either way, so this is what says the rewrite is a rewrite.
+    """
+
+    @pytest.mark.parametrize(
+        "demand_rate, time_constant",
+        [(1e-3, 1e-6), (1.0, 1.0), (100.0, 0.05), (1e4, 1e3)],
+    )
+    def test_the_two_forms_agree_where_both_work(self, demand_rate, time_constant):
+        """So the rewrite is a rewrite and not a change of behaviour. Measured
+        over 2000 random pairs across these ranges: the largest difference is
+        2.2e-16."""
+        actuator = ThrottleActuator(
+            demand_rate=demand_rate,
+            throttle_time_constant=time_constant,
+            throttle_range=(0.0, 1.0),
+        )
+        demand_period = 1.0 / demand_rate
+
+        assert actuator._alpha == pytest.approx(
+            demand_period / (time_constant + demand_period), rel=1e-12
+        )
+
+
+class TestAMisspeltRange:
+    """A range read out of a config file arrives as anything.
+
+    Three endpoints dropped the third in silence, one raised IndexError, and
+    string endpoints failed inside np.clip with a ufunc loop error.
+    """
+
+    @pytest.mark.parametrize(
+        "limits", [(0.0,), (0.0, 1.0, 2.0), ("0", "1"), 1.0, None, (True, False)]
+    )
+    def test_it_is_refused_at_the_boundary(self, limits):
+        with pytest.raises(ValueError, match="actuator_range"):
+            ThrottleActuator(throttle_range=limits)
+
+    @pytest.mark.parametrize("limits", [(0.0, 1.0), (0, 1), [0.0, 1.0]])
+    def test_the_spellings_that_work_still_work(self, limits):
+        assert ThrottleActuator(throttle_range=limits).actuator_range == (0.0, 1.0)
+
+
+class TestDynamicsNeedADemandRate:
+    """Neither is implemented for a continuous actuator.
+
+    Both were accepted with a warning, so asking for a 0.1 s lag gave an instant
+    response and said so in a line that a simulation log buries.
+    """
+
+    @pytest.mark.parametrize(
+        "option", [{"throttle_time_constant": 0.1}, {"throttle_rate_limit": 0.5}]
+    )
+    def test_asking_for_one_without_a_rate_is_refused(self, option):
+        with pytest.raises(ValueError, match="needs a demand_rate"):
+            ThrottleActuator(demand_rate=None, **option)
+
+    def test_a_continuous_actuator_on_its_own_still_builds(self):
+        assert ThrottleActuator(demand_rate=None).demand_rate is None
+
+
+def _no_op_controller(time, sampling_rate, state, state_history, observed, interactive):  # pylint: disable=unused-argument
+    """A controller that commands nothing, so these tests are about the wiring."""
+    return None
+
+
+class TestTheControllerAndTheActuatorShareOneSamplingRate:
+    """``add_*_control`` built the two halves from the same argument.
+
+    The actuator normalizes what it is given and stores a float. The controller
+    was handed the original object, so one quantity ended up held twice, in two
+    types. Nothing complained: the call returned a rocket that looked complete,
+    and the failure surfaced later inside Flight at
+    ``controller_time_step = 1 / controller.sampling_rate``, by which point the
+    actuator and the controller were already attached.
+
+    Passing the actuator's normalized value is the smaller of the two available
+    fixes. Refusing strings and bools outright is the other, and it is a wider
+    behaviour change than this needs.
+    """
+
+    # The third entry reaches through .x because ThrustVectorActuator2D keeps
+    # no demand_rate of its own, only the two axes it builds from the argument.
+    ADDERS = [
+        ("add_roll_control", "roll_control", {"max_roll_torque": 10.0}, False),
+        ("add_throttle_control", "throttle_control", {}, False),
+        (
+            "add_thrust_vector_control",
+            "thrust_vector_control",
+            {"max_gimbal_angle": 5.0},
+            True,
+        ),
+    ]
+
+    @staticmethod
+    def _rate_of(rocket, attribute, per_axis):
+        actuator = getattr(rocket, attribute)
+        return (actuator.x if per_axis else actuator).demand_rate
+
+    @pytest.mark.parametrize("adder, attribute, extra, per_axis", ADDERS)
+    @pytest.mark.parametrize("given", ["100", 100, 100.0])
+    def test_both_halves_hold_the_same_normalized_value(
+        self, calisto, adder, attribute, extra, per_axis, given
+    ):
+        getattr(calisto, adder)(
+            controller_function=_no_op_controller, sampling_rate=given, **extra
+        )
+        rate = self._rate_of(calisto, attribute, per_axis)
+        controller = calisto._controllers[-1]
+
+        assert controller.sampling_rate == rate
+        assert type(controller.sampling_rate) is type(rate)
+
+    @pytest.mark.parametrize(
+        "adder, extra", [(adder, extra) for adder, _, extra, _ in ADDERS]
+    )
+    def test_the_controller_rate_is_usable_as_a_time_step(self, calisto, adder, extra):
+        """The exact expression Flight evaluates, which is where a string blew
+        up with a TypeError after the rocket had already been assembled."""
+        getattr(calisto, adder)(
+            controller_function=_no_op_controller, sampling_rate="100", **extra
+        )
+        controller = calisto._controllers[-1]
+
+        assert 1 / controller.sampling_rate == pytest.approx(0.01)
+
+
+class TestAFailedReplacementLeavesTheRocketAlone:
+    """The old controller used to go before the new one was built.
+
+    A rejected argument on a second call then left the rocket carrying an
+    actuator that simulation would never call, with nothing said.
+    """
+
+    ADDERS = [
+        ("add_roll_control", {"max_roll_torque": 10.0}),
+        ("add_throttle_control", {}),
+        ("add_thrust_vector_control", {"max_gimbal_angle": 5.0}),
+    ]
+
+    @pytest.mark.parametrize("adder, extra", ADDERS)
+    def test_a_rejected_second_call_keeps_the_first_controller(
+        self, calisto, adder, extra
+    ):
+        getattr(calisto, adder)(
+            controller_function=_no_op_controller, sampling_rate=100, **extra
+        )
+        before = list(calisto._controllers)
+
+        with pytest.raises(ValueError):
+            getattr(calisto, adder)(
+                controller_function=_no_op_controller, sampling_rate=-1, **extra
+            )
+
+        assert calisto._controllers == before
+
+    @pytest.mark.parametrize("adder, extra", ADDERS)
+    def test_an_accepted_second_call_still_replaces(self, calisto, adder, extra):
+        getattr(calisto, adder)(
+            controller_function=_no_op_controller, sampling_rate=100, **extra
+        )
+        getattr(calisto, adder)(
+            controller_function=_no_op_controller, sampling_rate=50, **extra
+        )
+
+        assert len(calisto._controllers) == 1
+        assert calisto._controllers[0].sampling_rate == 50.0
+
+
+class TestABooleanIsNotARate:
+    """YAML reads `yes` and `on` as True, and float(True) is 1.0.
+
+    A sampling rate written that way became 1 Hz with nothing said, and an
+    earlier revision of this file pinned that as the contract.
+    """
+
+    @pytest.mark.parametrize(
+        "option",
+        ["demand_rate", "throttle_rate_limit", "throttle_time_constant"],
+    )
+    def test_a_boolean_is_refused(self, option):
+        with pytest.raises(ValueError, match="boolean"):
+            ThrottleActuator(**{option: True})
+
+    def test_an_integer_too_large_for_a_float_is_a_value_error(self):
+        """`float(10**400)` raises OverflowError, so the validator leaked a
+        different exception type than everything beside it."""
+        with pytest.raises(ValueError):
+            ThrottleActuator(demand_rate=10**400)
