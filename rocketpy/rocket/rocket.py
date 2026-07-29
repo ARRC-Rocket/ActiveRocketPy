@@ -2075,13 +2075,6 @@ class Rocket:
                 "Only one thrust_vector_control per rocket is currently supported. "
                 + "Overwriting previous thrust_vector_control and controllers."
             )
-            self._controllers = [
-                controller
-                for controller in self._controllers
-                if not isinstance(
-                    controller.interactive_objects, ThrustVectorActuator2D
-                )
-            ]
 
         thrust_vector_control = ThrustVectorActuator2D(
             name=name,
@@ -2113,6 +2106,13 @@ class Rocket:
             initial_observed_variables=initial_observed_variables,
             name=controller_name,
         )
+        # Removed only once both halves are built, so a rejected argument on a
+        # second call leaves the rocket as it was.
+        self._controllers = [
+            controller
+            for controller in self._controllers
+            if not isinstance(controller.interactive_objects, ThrustVectorActuator2D)
+        ]
         self.thrust_vector_control = thrust_vector_control
         self._add_controllers(_controller)
         if return_controller:
@@ -2224,11 +2224,6 @@ class Rocket:
                 "Only one roll control per rocket is currently supported. "
                 + "Overwriting previous roll control and controllers."
             )
-            self._controllers = [
-                controller
-                for controller in self._controllers
-                if not isinstance(controller.interactive_objects, RollActuator)
-            ]
 
         roll_control = RollActuator(
             name=name,
@@ -2247,6 +2242,13 @@ class Rocket:
             initial_observed_variables=initial_observed_variables,
             name=controller_name,
         )
+        # Removed only once both halves are built, so a rejected argument on a
+        # second call leaves the rocket as it was.
+        self._controllers = [
+            controller
+            for controller in self._controllers
+            if not isinstance(controller.interactive_objects, RollActuator)
+        ]
         self.roll_control = roll_control
         self._add_controllers(_controller)
         if return_controller:
@@ -2360,11 +2362,6 @@ class Rocket:
                 "Only one throttle control per rocket is currently supported. "
                 + "Overwriting previous throttle control and controllers."
             )
-            self._controllers = [
-                controller
-                for controller in self._controllers
-                if not isinstance(controller.interactive_objects, ThrottleActuator)
-            ]
 
         throttle_control = ThrottleActuator(
             name=name,
@@ -2385,6 +2382,13 @@ class Rocket:
             name=controller_name,
         )
 
+        # Removed only once both halves are built, so a rejected argument on a
+        # second call leaves the rocket as it was.
+        self._controllers = [
+            controller
+            for controller in self._controllers
+            if not isinstance(controller.interactive_objects, ThrottleActuator)
+        ]
         self.throttle_control = throttle_control
         self._add_controllers(_controller)
 

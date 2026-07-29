@@ -721,6 +721,43 @@ class TestTheFilterCoefficient:
         )
 
 
+class TestAMisspeltRange:
+    """A range read out of a config file arrives as anything.
+
+    Three endpoints dropped the third in silence, one raised IndexError, and
+    string endpoints failed inside np.clip with a ufunc loop error.
+    """
+
+    @pytest.mark.parametrize(
+        "limits", [(0.0,), (0.0, 1.0, 2.0), ("0", "1"), 1.0, None, (True, False)]
+    )
+    def test_it_is_refused_at_the_boundary(self, limits):
+        with pytest.raises(ValueError, match="actuator_range"):
+            ThrottleActuator(throttle_range=limits)
+
+    @pytest.mark.parametrize("limits", [(0.0, 1.0), (0, 1), [0.0, 1.0]])
+    def test_the_spellings_that_work_still_work(self, limits):
+        assert ThrottleActuator(throttle_range=limits).actuator_range == (0.0, 1.0)
+
+
+class TestDynamicsNeedADemandRate:
+    """Neither is implemented for a continuous actuator.
+
+    Both were accepted with a warning, so asking for a 0.1 s lag gave an instant
+    response and said so in a line that a simulation log buries.
+    """
+
+    @pytest.mark.parametrize(
+        "option", [{"throttle_time_constant": 0.1}, {"throttle_rate_limit": 0.5}]
+    )
+    def test_asking_for_one_without_a_rate_is_refused(self, option):
+        with pytest.raises(ValueError, match="needs a demand_rate"):
+            ThrottleActuator(demand_rate=None, **option)
+
+    def test_a_continuous_actuator_on_its_own_still_builds(self):
+        assert ThrottleActuator(demand_rate=None).demand_rate is None
+
+
 def _no_op_controller(time, sampling_rate, state, state_history, observed, interactive):  # pylint: disable=unused-argument
     """A controller that commands nothing, so these tests are about the wiring."""
     return None
@@ -787,3 +824,45 @@ class TestTheControllerAndTheActuatorShareOneSamplingRate:
         controller = calisto._controllers[-1]
 
         assert 1 / controller.sampling_rate == pytest.approx(0.01)
+
+
+class TestAFailedReplacementLeavesTheRocketAlone:
+    """The old controller used to go before the new one was built.
+
+    A rejected argument on a second call then left the rocket carrying an
+    actuator that simulation would never call, with nothing said.
+    """
+
+    ADDERS = [
+        ("add_roll_control", {"max_roll_torque": 10.0}),
+        ("add_throttle_control", {}),
+        ("add_thrust_vector_control", {"max_gimbal_angle": 5.0}),
+    ]
+
+    @pytest.mark.parametrize("adder, extra", ADDERS)
+    def test_a_rejected_second_call_keeps_the_first_controller(
+        self, calisto, adder, extra
+    ):
+        getattr(calisto, adder)(
+            controller_function=_no_op_controller, sampling_rate=100, **extra
+        )
+        before = list(calisto._controllers)
+
+        with pytest.raises(ValueError):
+            getattr(calisto, adder)(
+                controller_function=_no_op_controller, sampling_rate=-1, **extra
+            )
+
+        assert calisto._controllers == before
+
+    @pytest.mark.parametrize("adder, extra", ADDERS)
+    def test_an_accepted_second_call_still_replaces(self, calisto, adder, extra):
+        getattr(calisto, adder)(
+            controller_function=_no_op_controller, sampling_rate=100, **extra
+        )
+        getattr(calisto, adder)(
+            controller_function=_no_op_controller, sampling_rate=50, **extra
+        )
+
+        assert len(calisto._controllers) == 1
+        assert calisto._controllers[0].sampling_rate == 50.0

@@ -47,6 +47,22 @@ def _non_negative_or_none(value, description):
     return number
 
 
+def _two_numbers_or_raise(value, description):
+    """A pair of numbers. Infinite is allowed here: it means unbounded."""
+    try:
+        lower, upper = value
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{description} must be exactly two numbers.") from error
+    numbers = []
+    for endpoint, where in ((lower, 0), (upper, 1)):
+        # Not float(), which takes "0" and would leave a YAML string range half
+        # converted while the rest of the config kept its strings.
+        if isinstance(endpoint, bool) or not isinstance(endpoint, (int, float)):
+            raise ValueError(f"{description}[{where}] must be a number.")
+        numbers.append(float(endpoint))
+    return numbers[0], numbers[1]
+
+
 class Actuator(ABC):
     """Abstract class used to define actuators.
 
@@ -105,9 +121,14 @@ class Actuator(ABC):
         # default really is (-inf, inf), meaning an actuator with no range.
         self.demand_rate = _positive_or_none(demand_rate, "demand_rate")
 
-        if not actuator_range[0] <= actuator_range[1]:
+        # A range read out of a config file arrives as anything. Without the
+        # shape and number checks, three endpoints drop the third in silence and
+        # string endpoints fail inside np.clip with a ufunc loop error.
+        lower, upper = _two_numbers_or_raise(actuator_range, "actuator_range")
+        if not lower <= upper:
             raise ValueError("actuator_range[0] must be <= actuator_range[1].")
-        self.actuator_range = actuator_range
+        self.actuator_range = (lower, upper)
+        actuator_range = self.actuator_range
 
         self.actuator_rate_limit = _non_negative_or_none(
             actuator_rate_limit, "actuator_rate_limit"
@@ -118,6 +139,21 @@ class Actuator(ABC):
         self.actuator_time_constant = _non_negative_or_none(
             actuator_time_constant, "actuator_time_constant"
         )
+
+        # Neither is implemented for a continuous actuator, and both were
+        # accepted with a warning. Asking for a 0.1 s lag and getting an
+        # instant response is worth stopping for rather than mentioning.
+        if self.demand_rate is None:
+            for option, given in (
+                ("actuator_rate_limit", self.actuator_rate_limit),
+                ("actuator_time_constant", self.actuator_time_constant),
+            ):
+                if given:
+                    raise ValueError(
+                        f"{option} needs a demand_rate: it is not applied to a "
+                        f"continuous actuator."
+                    )
+
         self._update_iir_coefficients()
 
         # An initial output outside the range used to survive here and come back
