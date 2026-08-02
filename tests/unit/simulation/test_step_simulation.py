@@ -177,6 +177,44 @@ def _step_with_roll(env, rocket, command, max_steps=100000):
     return flight, steps
 
 
+class TestEveryCallAdvances:
+    """A call has to leave the flight further along than it found it.
+
+    The phase transition used to return without touching ``t`` or ``y_sol``,
+    leaving the new phase to be initialised on the call after. A caller that
+    counts a step per call, which is what the Balloon Popping Challenge
+    environment does, then has its own clock ahead of the flight's.
+    """
+
+    def test_no_call_returns_without_advancing(self, flight_calisto):
+        stepped = _stepped_twin(flight_calisto)
+        stalled = []
+        calls = 0
+        while not stepped._step_state["finished"]:
+            before = stepped.t
+            stepped.step_simulation()
+            calls += 1
+            if not stepped._step_state["finished"] and stepped.t <= before:
+                stalled.append(calls)
+
+        assert not stalled, f"calls {stalled} of {calls} did not advance"
+
+    def test_a_transition_is_absorbed_rather_than_costing_a_call(self, flight_calisto):
+        """The control for the test above, which returning early on every call
+        would also pass. More than one phase has to actually be visited."""
+        stepped = _stepped_twin(flight_calisto)
+        _, phases_seen = _run_stepped(stepped)
+
+        assert len(phases_seen) > 1
+
+    def test_the_flight_still_ends_where_simulate_ends(self, flight_calisto):
+        """Absorbing the transition must not skip the node it was standing on."""
+        stepped = _stepped_twin(flight_calisto)
+        _run_stepped(stepped)
+
+        np.testing.assert_allclose(stepped.t, flight_calisto.t, rtol=1e-8, atol=1e-10)
+
+
 class TestControlledStepSimulation:
     """Injecting an actuator command between steps must move the trajectory.
 
