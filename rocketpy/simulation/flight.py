@@ -879,97 +879,78 @@ class Flight:
         if state["finished"]:
             return
 
-        phase_index = state["phase_index"]
-        if phase_index >= len(self.flight_phases) - 1:
-            state["finished"] = True
+        # One call has to leave the flight further along than it found it, so a
+        # call that lands on a phase boundary carries on into the new phase
+        # instead of returning. Only the finish path below returns without
+        # advancing, and by then there is nothing left to advance.
+        while True:
+            phase_index = state["phase_index"]
+            if phase_index >= len(self.flight_phases) - 1:
+                state["finished"] = True
 
-            self.post_process_simulation()
-            self.initialize_prints_plots()
-            return
+                self.post_process_simulation()
+                self.initialize_prints_plots()
+                return
 
-        phase = self.flight_phases[phase_index]
+            phase = self.flight_phases[phase_index]
 
-        # Determine maximum time for this flight phase
-        phase.time_bound = self.flight_phases[phase_index + 1].t
+            # Determine maximum time for this flight phase
+            phase.time_bound = self.flight_phases[phase_index + 1].t
 
-        # Initialize phase only once
-        if not state["phase_initialized"]:
-            # Evaluate callbacks
-            for callback in phase.callbacks:
+            # Initialize phase only once
+            if not state["phase_initialized"]:
+                # Evaluate callbacks
+                for callback in phase.callbacks:
+                    callback(self)
+
+                # Create solver for this flight phase
+                self.function_evaluations.append(0)
+
+                phase.solver = self._solver(
+                    phase.derivative,
+                    t0=phase.t,
+                    y0=self.y_sol,
+                    t_bound=phase.time_bound,
+                    rtol=self.rtol,
+                    atol=self.atol,
+                    max_step=self.max_time_step,
+                    min_step=self.min_time_step,
+                )
+
+                # Initialize phase time nodes
+                self.__setup_phase_time_nodes(phase)
+
+                state["phase_initialized"] = True
+                state["node_index"] = 0
+
+            # Check if current phase is fully processed
+            if state["node_index"] >= len(phase.time_nodes) - 1:
+                state["phase_index"] += 1
+                state["phase_initialized"] = False
+                state["node_index"] = 0
+                continue  # the new phase is initialised below, in this same call
+
+            node_index = state["node_index"]
+            node = phase.time_nodes[node_index]
+
+            # Determine time bound for this time node
+            node.time_bound = phase.time_nodes[node_index + 1].t
+            phase.solver.t_bound = node.time_bound
+
+            if self.__is_lsoda:
+                phase.solver._lsoda_solver._integrator.rwork[0] = phase.solver.t_bound
+                phase.solver._lsoda_solver._integrator.call_args[4] = (
+                    phase.solver._lsoda_solver._integrator.rwork
+                )
+
+            phase.solver.status = "running"
+
+            # Feed required parachute and discrete controller triggers
+            # TODO: parachutes should be moved to controllers
+            for callback in node.callbacks:
                 callback(self)
 
-            # Create solver for this flight phase
-            self.function_evaluations.append(0)
-
-            phase.solver = self._solver(
-                phase.derivative,
-                t0=phase.t,
-                y0=self.y_sol,
-                t_bound=phase.time_bound,
-                rtol=self.rtol,
-                atol=self.atol,
-                max_step=self.max_time_step,
-                min_step=self.min_time_step,
-            )
-
-            # Initialize phase time nodes
-            self.__setup_phase_time_nodes(phase)
-
-            state["phase_initialized"] = True
-            state["node_index"] = 0
-
-        # Check if current phase is fully processed
-        if state["node_index"] >= len(phase.time_nodes) - 1:
-            state["phase_index"] += 1
-            state["phase_initialized"] = False
-            state["node_index"] = 0
-            return  # Move to next phase on next call
-
-        node_index = state["node_index"]
-        node = phase.time_nodes[node_index]
-
-        # Determine time bound for this time node
-        node.time_bound = phase.time_nodes[node_index + 1].t
-        phase.solver.t_bound = node.time_bound
-
-        if self.__is_lsoda:
-            phase.solver._lsoda_solver._integrator.rwork[0] = phase.solver.t_bound
-            phase.solver._lsoda_solver._integrator.call_args[4] = (
-                phase.solver._lsoda_solver._integrator.rwork
-            )
-
-        phase.solver.status = "running"
-
-        # Feed required parachute and discrete controller triggers
-        # TODO: parachutes should be moved to controllers
-        for callback in node.callbacks:
-            callback(self)
-
-        for controller in node._controllers:
-            controller(
-                self.t,
-                self.y_sol,
-                self.solution,
-                self.sensors,
-                self.env,
-            )
-
-        # Placeholder for parachute triggers in step simulation, which is currently not migrated
-
-        while phase.solver.status == "running":
-            # Execute solver step, log solution and function evaluations
-            phase.solver.step()
-            self.solution += [[phase.solver.t, *phase.solver.y]]
-            self.function_evaluations.append(phase.solver.nfev)
-
-            # Update time and state
-            self.t = phase.solver.t
-            self.y_sol = phase.solver.y
-            if self.verbose:
-                print(f"Current Simulation Time: {self.t:3.4f} s", end="\r")
-                logger.debug("Current Simulation Time: %3.4f s", self.t)
-
-            for controller in self._continuous_controllers:
+            for controller in node._controllers:
                 controller(
                     self.t,
                     self.y_sol,
@@ -978,25 +959,50 @@ class Flight:
                     self.env,
                 )
 
-            if self.__check_simulation_events(phase, phase_index, node_index):
-                break  # Stop if simulation termination event occurred
+            # Placeholder for parachute triggers in step simulation, which is currently not migrated
 
-            # Process overshootable time nodes if enabled
-            if self.time_overshoot and self.__process_overshootable_nodes(
-                phase, phase_index, node_index
-            ):
-                break
+            while phase.solver.status == "running":
+                # Execute solver step, log solution and function evaluations
+                phase.solver.step()
+                self.solution += [[phase.solver.t, *phase.solver.y]]
+                self.function_evaluations.append(phase.solver.nfev)
 
-            # If controlled flight, post process must be done on sim time
-            # Post-process controllers if needed
-            if self._controllers:
-                phase.derivative(self.t, self.y_sol, post_processing=True)
+                # Update time and state
+                self.t = phase.solver.t
+                self.y_sol = phase.solver.y
+                if self.verbose:
+                    print(f"Current Simulation Time: {self.t:3.4f} s", end="\r")
+                    logger.debug("Current Simulation Time: %3.4f s", self.t)
 
-        if node._component_sensors:
-            u_dot = phase.derivative(self.t, self.y_sol)
-            self.__measure_sensors(node._component_sensors, u_dot)
+                for controller in self._continuous_controllers:
+                    controller(
+                        self.t,
+                        self.y_sol,
+                        self.solution,
+                        self.sensors,
+                        self.env,
+                    )
 
-        state["node_index"] += 1
+                if self.__check_simulation_events(phase, phase_index, node_index):
+                    break  # Stop if simulation termination event occurred
+
+                # Process overshootable time nodes if enabled
+                if self.time_overshoot and self.__process_overshootable_nodes(
+                    phase, phase_index, node_index
+                ):
+                    break
+
+                # If controlled flight, post process must be done on sim time
+                # Post-process controllers if needed
+                if self._controllers:
+                    phase.derivative(self.t, self.y_sol, post_processing=True)
+
+            if node._component_sensors:
+                u_dot = phase.derivative(self.t, self.y_sol)
+                self.__measure_sensors(node._component_sensors, u_dot)
+
+            state["node_index"] += 1
+            return
 
     def __setup_phase_time_nodes(self, phase):
         """Set up time nodes for the current phase.
