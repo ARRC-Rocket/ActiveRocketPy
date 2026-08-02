@@ -292,16 +292,23 @@ class MonteCarlo:  # pylint: disable=too-many-public-methods
             start_time=time(),
         )
         inputs_json = ""
+        sim_idx = self._initial_sim_idx
+        # One independent seed per simulation index makes the generated inputs
+        # invariant to the execution mode and to the worker count (see
+        # ``__seed_components``). The ``SeedSequence`` is created fresh here so
+        # that index ``i`` always maps to the same child seed, including in
+        # ``append`` mode (``spawn`` is invariant to the spawn count).
+        child_seeds = np.random.SeedSequence(random_seed).spawn(
+            self.number_of_simulations
+        )
         try:
-            self.environment._set_stochastic(random_seed)
-            self.rocket._set_stochastic(random_seed)
-            self.flight._set_stochastic(random_seed)
             while sim_monitor.keep_simulating():
-                sim_monitor.increment()
+                sim_idx = sim_monitor.increment() - 1
+                self.__seed_components(child_seeds[sim_idx])
 
                 flight = self.__run_single_simulation()
-                inputs_json = self.__evaluate_flight_inputs(sim_monitor.count)
-                outputs_json = self.__evaluate_flight_outputs(flight, sim_monitor.count)
+                inputs_json = self.__evaluate_flight_inputs(sim_idx)
+                outputs_json = self.__evaluate_flight_outputs(flight, sim_idx)
                 self.__append_serial_results(inputs_json, outputs_json)
 
                 sim_monitor.print_update_status()
@@ -316,7 +323,7 @@ class MonteCarlo:  # pylint: disable=too-many-public-methods
 
         except Exception as error:
             self.__save_serial_error(
-                inputs_json, f"Error on iteration {sim_monitor.count}: {error}"
+                inputs_json, f"Error on iteration {sim_idx}: {error}"
             )
             raise error
 
@@ -363,13 +370,20 @@ class MonteCarlo:  # pylint: disable=too-many-public-methods
             )
 
             processes = []
-            seeds = np.random.SeedSequence(random_seed).spawn(n_workers)
+            # One independent seed per simulation index (not per worker) makes
+            # the generated inputs invariant to ``n_workers``: the worker that
+            # runs simulation ``i`` always seeds from ``child_seeds[i]``,
+            # regardless of how many workers there are. The full list is shared
+            # with every worker; the shared atomic counter assigns indices.
+            child_seeds = np.random.SeedSequence(random_seed).spawn(
+                self.number_of_simulations
+            )
 
-            for seed in seeds:
+            for _ in range(n_workers):
                 sim_producer = multiprocess.Process(
                     target=self.__sim_producer,
                     args=(
-                        seed,
+                        child_seeds,
                         sim_monitor,
                         mutex,
                         simulation_error_event,
@@ -411,13 +425,16 @@ class MonteCarlo:  # pylint: disable=too-many-public-methods
             raise ValueError("Number of workers must be at least 2 for parallel mode.")
         return n_workers
 
-    def __sim_producer(self, seed, sim_monitor, mutex, error_event):  # pylint: disable=too-many-statements
+    def __sim_producer(self, child_seeds, sim_monitor, mutex, error_event):  # pylint: disable=too-many-statements
         """Simulation producer to be used in parallel by multiprocessing.
 
         Parameters
         ----------
-        seed : int
-            The seed to set the random number generator.
+        child_seeds : list[numpy.random.SeedSequence]
+            One seed sequence per simulation index. Before each simulation the
+            worker seeds the stochastic models from ``child_seeds[sim_idx]``,
+            where ``sim_idx`` is pulled from the shared atomic counter. This
+            keeps the generated inputs invariant to the number of workers.
         sim_monitor : _SimMonitor
             The simulation monitor object to keep track of the simulations.
         mutex : multiprocess.Lock
@@ -426,14 +443,13 @@ class MonteCarlo:  # pylint: disable=too-many-public-methods
             Event signaling an error occurred during the simulation.
         """
         try:
-            # Ensure Processes generate different random numbers
-            self.environment._set_stochastic(seed)
-            self.rocket._set_stochastic(seed)
-            self.flight._set_stochastic(seed)
-
             while sim_monitor.keep_simulating():
                 sim_idx = sim_monitor.increment() - 1
                 inputs_json, outputs_json = "", ""
+
+                # Seed per simulation index so the inputs are reproducible and
+                # independent of which worker happens to run this index.
+                self.__seed_components(child_seeds[sim_idx])
 
                 flight = self.__run_single_simulation()
                 inputs_json = self.__evaluate_flight_inputs(sim_idx)
@@ -476,6 +492,31 @@ class MonteCarlo:  # pylint: disable=too-many-public-methods
             )
             error_event.set()
             mutex.release()
+
+    def __seed_components(self, simulation_seed):
+        """Seed the stochastic models for a single simulation index.
+
+        The given seed sequence is split into three independent sub-streams so
+        that the environment, rocket and flight do not share the same random
+        draws (sharing a single seed would correlate their first sampled
+        values). Seeding per simulation index -- rather than once per worker --
+        is what makes the Monte Carlo inputs invariant to the execution mode
+        (serial vs parallel) and to the number of workers.
+
+        Parameters
+        ----------
+        simulation_seed : numpy.random.SeedSequence
+            The seed sequence assigned to the current simulation index. It is
+            spawned into three child sequences, one per stochastic model.
+
+        Returns
+        -------
+        None
+        """
+        env_seed, rocket_seed, flight_seed = simulation_seed.spawn(3)
+        self.environment._set_stochastic(env_seed)
+        self.rocket._set_stochastic(rocket_seed)
+        self.flight._set_stochastic(flight_seed)
 
     def __run_single_simulation(self):
         """Runs a single simulation and returns the inputs and outputs.
