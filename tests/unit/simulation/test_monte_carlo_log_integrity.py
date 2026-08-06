@@ -347,6 +347,11 @@ def test_ctrl_c_before_the_first_row_keeps_the_interrupt(tmp_path, monkeypatch):
         def keep_simulating(self):
             raise KeyboardInterrupt("ctrl-c before the first simulation")
 
+        @staticmethod
+        def reprint(*args, **kwargs):
+            """This fork routes run messages through the monitor so they do not
+            land on top of the progress line."""
+
     monkeypatch.setattr(mc, "_SimMonitor", _Monitor)
     runner = _serial_runner(tmp_path)
 
@@ -371,6 +376,11 @@ def test_ctrl_c_between_rows_does_not_report_the_row_that_succeeded(
 
         def __init__(self, **_kwargs):
             self.laps = 0
+
+        @staticmethod
+        def reprint(*args, **kwargs):
+            """This fork routes run messages through the monitor so they do not
+            land on top of the progress line."""
 
         def keep_simulating(self):
             self.laps += 1

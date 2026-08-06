@@ -478,11 +478,13 @@ class MonteCarlo:  # pylint: disable=too-many-public-methods
 
         except KeyboardInterrupt:
             self._interrupted = True
-            print("Keyboard interrupt received. Files saved.")
+            # reprint rather than print: the serial run redraws a progress line
+            # with a carriage return, and a plain print lands on top of it.
+            _SimMonitor.reprint("Keyboard interrupt received. Files saved.")
             self.__keep_the_inputs_that_did_not_finish(inputs_json)
 
         except Exception as error:
-            print(f"Error on iteration {sim_monitor.count}: {error}")
+            _SimMonitor.reprint(f"Error on iteration {sim_monitor.count}: {error}")
             self.__keep_the_inputs_that_did_not_finish(inputs_json)
             raise error
 
