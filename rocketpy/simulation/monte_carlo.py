@@ -13,12 +13,13 @@ change in future versions. Users are encouraged to check for updates and read th
 latest documentation.
 """
 
+import csv
 import json
 import os
 import traceback
 import warnings
 from pathlib import Path
-from time import time
+from time import monotonic, time
 
 import numpy as np
 import simplekml
@@ -29,6 +30,7 @@ from rocketpy.plots.monte_carlo_plots import _MonteCarloPlots
 from rocketpy.prints.monte_carlo_prints import _MonteCarloPrints
 from rocketpy.simulation.flight import Flight
 from rocketpy.tools import (
+    _seed_sequence_to_int,
     generate_monte_carlo_ellipses,
     generate_monte_carlo_ellipses_coordinates,
     import_optional_dependency,
@@ -37,7 +39,7 @@ from rocketpy.tools import (
 # TODO: Create evolution plots to analyze convergence
 
 
-class MonteCarlo:
+class MonteCarlo:  # pylint: disable=too-many-public-methods
     """Class to run a Monte Carlo simulation of a rocket flight.
 
     Attributes
@@ -95,7 +97,7 @@ class MonteCarlo:
         flight,
         export_list=None,
         data_collector=None,
-    ):  # pylint: disable=too-many-statements
+    ):
         """
         Initialize a MonteCarlo object.
 
@@ -168,10 +170,11 @@ class MonteCarlo:
         number_of_simulations,
         append=False,
         parallel=False,
-        random_seed=None,
         n_workers=None,
+        *,
+        random_seed=None,
         **kwargs,
-    ):  # pylint: disable=too-many-statements
+    ):
         """
         Runs the Monte Carlo simulation and saves all data.
 
@@ -184,13 +187,27 @@ class MonteCarlo:
             False, the files will be overwritten. Default is False.
         parallel : bool, optional
             If True, the simulations will be run in parallel. Default is False.
-        random_seed : int, optional
-            The seed to set the random number generator. Default is None.
         n_workers : int, optional
             Number of workers to be used if ``parallel=True``. If None, the
             number of workers will be equal to the number of CPUs available.
             A minimum of 2 workers is required for parallel mode.
             Default is None.
+        random_seed : int, numpy integer, sequence of ints, or SeedSequence, optional
+            Root seed for the run. When provided, the sampled inputs are
+            reproducible and identical across serial and parallel execution and
+            across any number of workers: each simulation index derives its own
+            decorrelated child stream from this root, so index ``i`` receives the
+            same inputs no matter which worker runs it. A supplied ``SeedSequence``
+            is copied from its full state rather than consumed, so repeated calls
+            with the same seed reproduce the same inputs. Each model is reseeded
+            with a 128-bit integer -- the seed type a custom sampler's
+            ``reset_seed`` accepts. A stateful ``numpy.random.Generator`` or
+            ``BitGenerator`` is rejected (it is an RNG to draw from, not a fixed
+            seed); pass ``rng.bit_generator.seed_seq`` to seed from one. Default is
+            None, which draws fresh entropy on each run -- the previous,
+            non-reproducible default. This seeding is informed by Scientific Python
+            SPEC 7 but keeps immutable seed-snapshot semantics rather than sharing a
+            ``Generator``.
         kwargs : dict
             Custom arguments for simulation export of the ``inputs`` file. Options
             are:
@@ -222,19 +239,38 @@ class MonteCarlo:
         overwritten. Make sure to save the files with the results before
         running the simulation again with `append=False`.
         """
+        # Everything that can be judged from the arguments alone happens before
+        # __setup_files, which opens both logs "w+" and empties them. Raising
+        # after that point destroys the previous run on the way out.
+        _validate_simulation_count(number_of_simulations)
+        if parallel:
+            n_workers = self.__validate_number_of_workers(n_workers)
+
         self._export_config = kwargs
         self.number_of_simulations = number_of_simulations
         self._initial_sim_idx = self.num_of_loaded_sims if append else 0
+        # Both run paths catch Ctrl-C, save what they have and return, so a
+        # stopped run is incomplete on purpose and the completeness check below
+        # has to know the difference between that and a worker going missing.
+        self._interrupted = False
 
-        _SimMonitor.reprint("Starting Monte Carlo analysis")
+        # Capture the small, picklable root seed state once per run (every
+        # simulation index derives its child seed from it, see __child_seed).
+        # This validates random_seed *before* __setup_files truncates any
+        # existing output, so an invalid seed cannot destroy prior results on
+        # the way to raising.
+        self.__capture_root_state(random_seed)
+
+        print("Starting Monte Carlo analysis")
 
         self.__setup_files(append)
 
         if parallel:
-            self.__run_in_parallel(random_seed, n_workers)
+            self.__run_in_parallel(n_workers)
         else:
-            self.__run_in_serial(random_seed)
+            self.__run_in_serial()
 
+        self.__check_each_index_was_recorded_once()
         self.__terminate_simulation()
 
         return self.results
@@ -272,14 +308,141 @@ class MonteCarlo:
         except OSError as error:
             raise OSError(f"Error creating files: {error}") from error
 
-    def __run_in_serial(self, random_seed=None):
+    @staticmethod
+    def __root_seed_sequence(random_seed):
+        """Build a fresh ``SeedSequence`` root from ``random_seed``.
+
+        ``random_seed`` may be an int (or any entropy ``numpy.random.SeedSequence``
+        accepts), an existing ``SeedSequence``, or ``None`` for fresh entropy. A
+        supplied ``SeedSequence`` is copied from its full ``state``, so the
+        spawning below neither mutates the caller's object nor advances a shared
+        child counter between calls; repeated ``simulate`` calls with the same
+        seed then stay reproducible. A stateful ``Generator``/``BitGenerator`` is
+        not accepted, since using it as an immutable seed would contradict its
+        consume-on-use semantics; pass ``rng.bit_generator.seed_seq`` to seed
+        from an existing generator's stream.
+        """
+        if isinstance(random_seed, np.random.SeedSequence):
+            return np.random.SeedSequence(**random_seed.state)
+        if isinstance(random_seed, (np.random.Generator, np.random.BitGenerator)):
+            raise TypeError(
+                "random_seed must be an int or a numpy.random.SeedSequence, not "
+                f"a {type(random_seed).__name__}; to seed from an existing "
+                "generator pass rng.bit_generator.seed_seq."
+            )
+        return np.random.SeedSequence(random_seed)
+
+    def __capture_root_state(self, random_seed):
+        """Capture the small, picklable root seed state for this run.
+
+        Stored once so serial mode and every parallel worker derive the same
+        per-index child seeds from it (see ``__child_seed``), instead of
+        materializing and pickling the full ``spawn(number_of_simulations)``
+        list to each process.
+        """
+        root = self.__root_seed_sequence(random_seed)
+        self.__root_state = (
+            root.entropy,
+            root.spawn_key,
+            root.pool_size,
+            root.n_children_spawned,
+        )
+
+    def __child_seed(self, sim_idx):
+        """Return the seed sequence for a single simulation index.
+
+        This equals ``root.spawn(number_of_simulations)[sim_idx]`` but is O(1)
+        in time and memory: ``SeedSequence.spawn`` derives child ``i`` by
+        appending ``n_children_spawned + i`` to the parent ``spawn_key``, so
+        rebuilding that one child directly reproduces it bit-for-bit while
+        letting a worker reconstruct any index from the small root state alone.
+        """
+        entropy, spawn_key, pool_size, base = self.__root_state
+        return np.random.SeedSequence(
+            entropy=entropy,
+            spawn_key=(*spawn_key, base + sim_idx),
+            pool_size=pool_size,
+        )
+
+    def __seed_simulation(self, child_seed):
+        """Reseed the stochastic models for a single simulation index.
+
+        The per-index child seed is split three ways so the environment,
+        rocket and flight draw from independent streams instead of sharing
+        one. Seeding per simulation index (not per worker) is what makes the
+        sampled inputs invariant to the execution mode and to the number of
+        workers. Each sub-stream is handed over as a 128-bit ``int`` (see
+        ``_seed_sequence_to_int``) so custom samplers keep working.
+        """
+        env_seed, rocket_seed, flight_seed = child_seed.spawn(3)
+        self.environment._set_stochastic(_seed_sequence_to_int(env_seed))
+        self.rocket._set_stochastic(_seed_sequence_to_int(rocket_seed))
+        self.flight._set_stochastic(_seed_sequence_to_int(flight_seed))
+
+    def __check_each_index_was_recorded_once(self):
+        """Every index this run claimed left exactly one input and one output row.
+
+        The counter hands each index out once, so a missing one means a worker
+        stopped between claiming and writing, and a repeated one means two
+        claimed the same index. Neither is visible in the files themselves: the
+        rows look well formed, and reading them back keyed by index hides the
+        duplicate behind the row that overwrote it. Both make the results wrong
+        while the run reports success, which is the thing per-index seeding is
+        supposed to rule out.
+
+        Only over the range this run produced. ``append=True`` leaves earlier
+        runs in the same files, and ``number_of_simulations`` is the total to
+        reach rather than a count to add, so the new indices are
+        ``_initial_sim_idx`` up to it.
+
+        A run stopped with Ctrl-C is short on purpose, so the indices it never
+        reached are not an error. What it did write is still held to the rest:
+        readable rows, one row per index, and nothing outside the range.
+
+        Indices below ``_initial_sim_idx`` are an earlier run's and are left
+        alone. Reconciling a history with holes in it is a separate job, and
+        this only answers for the simulations this run claimed.
+        """
+        inputs = _recorded_indices("inputs", self.input_file)
+        outputs = _recorded_indices("outputs", self.output_file)
+        if inputs != outputs:
+            only_in = lambda a, b: sorted(set(a) - set(b))  # noqa: E731
+            raise RuntimeError(
+                f"the input and output files disagree about which simulations "
+                f"ran: {only_in(inputs, outputs)[:5]} have inputs and no "
+                f"outputs, {only_in(outputs, inputs)[:5]} the other way round. "
+                f"A worker stopped between the two writes, so the results are "
+                f"not reported as a successful run."
+            )
+
+        repeated = sorted(index for index, count in inputs.items() if count > 1)
+        beyond = sorted(
+            index for index in inputs if index >= self.number_of_simulations
+        )
+        missing = (
+            []
+            if self._interrupted
+            else sorted(
+                set(range(self._initial_sim_idx, self.number_of_simulations))
+                - set(inputs)
+            )
+        )
+        if missing or repeated or beyond:
+            raise RuntimeError(
+                f"the files do not match the simulations that ran: "
+                f"{len(missing)} never written {missing[:5]}, "
+                f"{len(repeated)} written more than once {repeated[:5]}, "
+                f"{len(beyond)} outside the range this run claimed {beyond[:5]}. "
+                f"The results are wrong, so they are not reported as a "
+                f"successful run."
+            )
+
+    def __run_in_serial(self):
         """
         Runs the monte carlo simulation in serial mode.
 
-        Parameters
-        ----------
-        random_seed : int, optional
-            The seed to set the random number generator in serial mode. Default is None.
+        The root seed state is captured by ``simulate`` before this runs, so each
+        simulation index derives its child seed from ``self.__root_state``.
 
         Returns
         -------
@@ -290,58 +453,54 @@ class MonteCarlo:
             n_simulations=self.number_of_simulations,
             start_time=time(),
         )
-        inputs_json = ""
-        sim_idx = self._initial_sim_idx
-        # One independent seed per simulation index makes the generated inputs
-        # invariant to the execution mode and to the worker count (see
-        # ``__seed_components``). The ``SeedSequence`` is created fresh here so
-        # that index ``i`` always maps to the same child seed, including in
-        # ``append`` mode (``spawn`` is invariant to the spawn count).
-        child_seeds = np.random.SeedSequence(random_seed).spawn(
-            self.number_of_simulations
-        )
         try:
-            while sim_monitor.keep_simulating():
-                sim_idx = sim_monitor.increment() - 1
-                self.__seed_components(child_seeds[sim_idx])
+            while True:
+                # First statement in the loop, so it is bound before the two
+                # monitor calls rather than after them. Ctrl-C in either one
+                # used to leave it unbound, or holding the last completed row.
+                inputs_json = ""
 
+                if not sim_monitor.keep_simulating():
+                    break
+                sim_idx = sim_monitor.increment() - 1
+
+                self.__seed_simulation(self.__child_seed(sim_idx))
                 flight = self.__run_single_simulation()
                 inputs_json = self.__evaluate_flight_inputs(sim_idx)
                 outputs_json = self.__evaluate_flight_outputs(flight, sim_idx)
-                self.__append_serial_results(inputs_json, outputs_json)
 
+                _record_simulation(
+                    self.input_file, self.output_file, inputs_json, outputs_json
+                )
                 sim_monitor.print_update_status()
 
             sim_monitor.print_final_status()
 
         except KeyboardInterrupt:
-            self.__save_serial_error(inputs_json, "Keyboard Interrupt, files saved.")
+            self._interrupted = True
+            print("Keyboard interrupt received. Files saved.")
+            self.__keep_the_inputs_that_did_not_finish(inputs_json)
 
         except Exception as error:
-            self.__save_serial_error(
-                inputs_json, f"Error on iteration {sim_idx}: {error}"
-            )
+            print(f"Error on iteration {sim_monitor.count}: {error}")
+            self.__keep_the_inputs_that_did_not_finish(inputs_json)
             raise error
 
-    def __append_serial_results(self, inputs_json, outputs_json):
-        with open(self.input_file, "a", encoding="utf-8") as f:
-            f.write(inputs_json)
-        with open(self.output_file, "a", encoding="utf-8") as f:
-            f.write(outputs_json)
-
-    def __save_serial_error(self, inputs_json, message):
-        _SimMonitor.reprint(message)
+    def __keep_the_inputs_that_did_not_finish(self, inputs_json):
+        """Append the inputs of a simulation that stopped part way through."""
         with open(self._error_file, "a", encoding="utf-8") as f:
             f.write(inputs_json)
 
-    def __run_in_parallel(self, random_seed=None, n_workers=None):
+    def __run_in_parallel(self, n_workers=None):
         """
         Runs the monte carlo simulation in parallel.
 
+        The root seed state is captured by ``simulate`` before this runs and
+        travels with the pickled instance, so every worker derives the same
+        per-index child seed from ``self.__root_state``.
+
         Parameters
         ----------
-        random_seed : int, optional
-            The seed to set the random sequence generator in parallel mode. Default is None.
         n_workers: int, optional
             Number of workers to be used. If None, the number of workers
             will be equal to the number of CPUs available. Default is None.
@@ -352,7 +511,7 @@ class MonteCarlo:
         """
         n_workers = self.__validate_number_of_workers(n_workers)
 
-        _SimMonitor.reprint(f"Running Monte Carlo simulation with {n_workers} workers.")
+        print(f"Running Monte Carlo simulation with {n_workers} workers.")
 
         multiprocess, managers = _import_multiprocess()
 
@@ -365,72 +524,67 @@ class MonteCarlo:
                 start_time=time(),
             )
 
-            processes = []
-            # One independent seed per simulation index (not per worker) makes
-            # the generated inputs invariant to ``n_workers``: the worker that
-            # runs simulation ``i`` always seeds from ``child_seeds[i]``,
-            # regardless of how many workers there are. The full list is shared
-            # with every worker; the shared atomic counter assigns indices.
-            child_seeds = np.random.SeedSequence(random_seed).spawn(
-                self.number_of_simulations
-            )
-
-            for _ in range(n_workers):
-                sim_producer = multiprocess.Process(
-                    target=self.__sim_producer,
-                    args=(
-                        child_seeds,
-                        sim_monitor,
-                        mutex,
-                        simulation_error_event,
-                    ),
-                )
-                processes.append(sim_producer)
-                sim_producer.start()
-
+            # Started workers only, and inside the try, so a ``start()`` that
+            # fails part way through the fleet does not leave the ones already
+            # running with nobody to clean them up.
+            started_processes = []
             try:
-                for sim_producer in processes:
-                    sim_producer.join()
-
-                # Handle error from the child processes
-                if simulation_error_event.is_set():
-                    raise RuntimeError(
-                        "An error occurred during the simulation. \n"
-                        f"Check the logs and error file {self.error_file} "
-                        "for more information."
+                # Each worker derives one independent child seed per simulation
+                # index (not per worker) from the shared root state: the counter
+                # assigns indices and index i always seeds from __child_seed(i),
+                # so the sampled inputs do not depend on the number of workers.
+                # The root state is small and travels with the pickled instance,
+                # so no per-index seed list is materialized or sent.
+                for _ in range(n_workers):
+                    sim_producer = multiprocess.Process(
+                        target=self.__sim_producer,
+                        args=(
+                            sim_monitor,
+                            mutex,
+                            simulation_error_event,
+                        ),
                     )
+                    sim_producer.start()
+                    started_processes.append(sim_producer)
+
+                _wait_for_workers(started_processes, simulation_error_event)
+                _stop_any_worker_still_running(started_processes)
+                _fail_if_a_worker_did_not_finish(
+                    started_processes, simulation_error_event, self.error_file
+                )
 
                 sim_monitor.print_final_status()
 
             # Handle error from the main process
             # pylint: disable=broad-except
             except (Exception, KeyboardInterrupt) as error:
-                simulation_error_event.set()
-
-                for sim_producer in processes:
-                    sim_producer.join()
-
-                if not isinstance(error, KeyboardInterrupt):
+                _bring_the_fleet_down(started_processes, simulation_error_event)
+                self._interrupted = isinstance(error, KeyboardInterrupt)
+                if not self._interrupted:
                     raise error
+            finally:
+                _stop_any_worker_still_running(started_processes)
 
     def __validate_number_of_workers(self, n_workers):
-        if n_workers is None or n_workers > os.cpu_count():
-            n_workers = os.cpu_count()
+        # os.cpu_count() is documented as possibly None, and comparing against
+        # it then raises rather than falling back to a usable default.
+        available = os.cpu_count() or 2
+        if n_workers is not None and type(n_workers) not in (int, np.integer):  # noqa: E721
+            raise TypeError(
+                f"Number of workers must be an integer, not {type(n_workers).__name__}."
+            )
+        if n_workers is None or n_workers > available:
+            n_workers = available
 
         if n_workers < 2:
             raise ValueError("Number of workers must be at least 2 for parallel mode.")
         return n_workers
 
-    def __sim_producer(self, child_seeds, sim_monitor, mutex, error_event):  # pylint: disable=too-many-statements
+    def __sim_producer(self, sim_monitor, mutex, error_event):  # pylint: disable=too-many-statements
         """Simulation producer to be used in parallel by multiprocessing.
 
         Parameters
         ----------
-        child_seeds : list[numpy.random.SeedSequence]
-            One seed sequence per simulation index. Before each simulation the
-            worker seeds the stochastic models from ``child_seeds[sim_idx]``,
-            where ``sim_idx`` is pulled from the shared atomic counter. This
-            keeps the generated inputs invariant to the number of workers.
         sim_monitor : _SimMonitor
             The simulation monitor object to keep track of the simulations.
         mutex : multiprocess.Lock
@@ -439,23 +593,33 @@ class MonteCarlo:
             Event signaling an error occurred during the simulation.
         """
         try:
-            while sim_monitor.keep_simulating():
-                sim_idx = sim_monitor.increment() - 1
-                inputs_json, outputs_json = "", ""
+            while True:
+                # First statement in the loop, so it is bound before the claim
+                # rather than after it. A claim that failed left these unassigned
+                # and the handler raised UnboundLocalError over the real error;
+                # a claim that failed on a later lap reported the previous row.
+                sim_idx, inputs_json, outputs_json = None, "", ""
 
-                # Seed per simulation index so the inputs are reproducible and
-                # independent of which worker happens to run this index.
-                self.__seed_components(child_seeds[sim_idx])
+                sim_idx = _claim_next_index(sim_monitor, mutex)
+                if sim_idx is None:
+                    break
 
+                self.__seed_simulation(self.__child_seed(sim_idx))
                 flight = self.__run_single_simulation()
                 inputs_json = self.__evaluate_flight_inputs(sim_idx)
                 outputs_json = self.__evaluate_flight_outputs(flight, sim_idx)
 
+                acquired = False
                 try:
                     mutex.acquire()
+                    acquired = True
                     if error_event.is_set():
-                        sim_monitor.reprint(
-                            "Simulation Interrupt, files from simulation "
+                        # Runs in a worker process spawned via multiprocessing:
+                        # logging handlers configured in the main process are
+                        # not guaranteed to be inherited (e.g. Windows "spawn"),
+                        # so this must use print() to remain visible.
+                        _SimMonitor.reprint(
+                            f"Simulation interrupt. Files from simulation "
                             f"{sim_idx} saved."
                         )
                         with open(self.error_file, "a", encoding="utf-8") as f:
@@ -463,49 +627,55 @@ class MonteCarlo:
 
                         break
 
-                    with open(self.input_file, "a", encoding="utf-8") as f:
-                        f.write(inputs_json)
-                    with open(self.output_file, "a", encoding="utf-8") as f:
-                        f.write(outputs_json)
-
+                    _record_simulation(
+                        self.input_file, self.output_file, inputs_json, outputs_json
+                    )
                     sim_monitor.print_update_status()
                 finally:
+                    if acquired:
+                        mutex.release()
+
+        except Exception:
+            # Set first, so a parent waiting on the join learns why. Best effort
+            # like everything below it: this is a manager proxy, the manager may
+            # already be gone, and reporting must not replace what it reports.
+            try:
+                error_event.set()
+            except Exception:  # pylint: disable=broad-exception-caught
+                pass
+            details = traceback.format_exc()
+
+            # The failure goes onto the inputs record rather than replacing it.
+            # Writing one or the other dropped the traceback for every failure
+            # after sampling, from the file the run tells the user to read.
+            try:
+                record = json.loads(inputs_json) if inputs_json else {"index": sim_idx}
+            except ValueError:
+                record = {"index": sim_idx}
+            record["error"] = details
+            record = json.dumps(record) + "\n"
+
+            acquired = False
+            try:
+                mutex.acquire()
+                acquired = True
+                with open(self.error_file, "a", encoding="utf-8") as f:
+                    f.write(record)
+
+                # See note above: must use print() to remain visible from a
+                # multiprocessing worker process.
+                _SimMonitor.reprint(f"Error on iteration {sim_idx}:\n{details}")
+            except Exception:  # pylint: disable=broad-exception-caught
+                # The mutex or the error file is unreachable too. Reporting is
+                # not worth losing the failure that started this.
+                pass
+            finally:
+                if acquired:
                     mutex.release()
 
-        except Exception:  # pylint: disable=broad-except
-            mutex.acquire()
-            with open(self.error_file, "a", encoding="utf-8") as f:
-                f.write(inputs_json)
-
-            sim_monitor.reprint(f"Error on iteration {sim_idx}:")
-            sim_monitor.reprint(traceback.format_exc())
-            error_event.set()
-            mutex.release()
-
-    def __seed_components(self, simulation_seed):
-        """Seed the stochastic models for a single simulation index.
-
-        The given seed sequence is split into three independent sub-streams so
-        that the environment, rocket and flight do not share the same random
-        draws (sharing a single seed would correlate their first sampled
-        values). Seeding per simulation index -- rather than once per worker --
-        is what makes the Monte Carlo inputs invariant to the execution mode
-        (serial vs parallel) and to the number of workers.
-
-        Parameters
-        ----------
-        simulation_seed : numpy.random.SeedSequence
-            The seed sequence assigned to the current simulation index. It is
-            spawned into three child sequences, one per stochastic model.
-
-        Returns
-        -------
-        None
-        """
-        env_seed, rocket_seed, flight_seed = simulation_seed.spawn(3)
-        self.environment._set_stochastic(env_seed)
-        self.rocket._set_stochastic(rocket_seed)
-        self.flight._set_stochastic(flight_seed)
+            # The worker exits non-zero, so the parent can tell a crash from a
+            # clean finish rather than only from the error event.
+            raise
 
     def __run_single_simulation(self):
         """Runs a single simulation and returns the inputs and outputs.
@@ -590,6 +760,107 @@ class MonteCarlo:
 
         return res.confidence_interval
 
+    def simulate_convergence(
+        self,
+        target_attribute="apogee_time",
+        target_confidence=0.95,
+        tolerance=0.5,
+        max_simulations=1000,
+        batch_size=50,
+        parallel=False,
+        n_workers=None,
+    ):
+        """Run Monte Carlo simulations in batches until the confidence interval
+        width converges within the specified tolerance or the maximum number of
+        simulations is reached.
+
+        Parameters
+        ----------
+        target_attribute : str
+            The target attribute to track its convergence (e.g., "apogee", "apogee_time", etc.).
+        target_confidence : float, optional
+            The confidence level for the interval (between 0 and 1). Default is 0.95.
+        tolerance : float, optional
+            The desired width of the confidence interval in seconds, meters, or other units. Default is 0.5.
+        max_simulations : int, optional
+            The maximum number of simulations to run to avoid infinite loops. Default is 1000.
+        batch_size : int, optional
+            The number of simulations to run in each batch. Default is 50.
+        parallel : bool, optional
+            Whether to run simulations in parallel. Default is False.
+        n_workers : int, optional
+            The number of worker processes to use if running in parallel. Default is None.
+
+        Returns
+        -------
+        confidence_interval_history : list of float
+            History of confidence interval widths, one value per batch of simulations.
+            The last element corresponds to the width when the simulation stopped for
+            either meeting the tolerance or reaching the maximum number of simulations.
+        """
+
+        # Validate inputs up-front. Without this, a non-positive batch_size makes
+        # the loop run zero new simulations every iteration and spin forever.
+        if not isinstance(batch_size, (int, np.integer)) or batch_size <= 0:
+            raise ValueError(
+                f"'batch_size' must be a positive integer, got {batch_size!r}."
+            )
+        if not isinstance(max_simulations, (int, np.integer)) or max_simulations <= 0:
+            raise ValueError(
+                f"'max_simulations' must be a positive integer, got "
+                f"{max_simulations!r}."
+            )
+        if not isinstance(tolerance, (int, float)) or tolerance <= 0:
+            raise ValueError(
+                f"'tolerance' must be a positive number, got {tolerance!r}."
+            )
+        if not 0 < target_confidence < 1:
+            raise ValueError(
+                "'target_confidence' must be between 0 and 1 (exclusive), got "
+                f"{target_confidence!r}."
+            )
+
+        self.import_outputs(self.filename.with_suffix(".outputs.txt"))
+        confidence_interval_history = []
+
+        while self.num_of_loaded_sims < max_simulations:
+            total_sims = min(self.num_of_loaded_sims + batch_size, max_simulations)
+
+            self.simulate(
+                number_of_simulations=total_sims,
+                append=True,
+                include_function_data=False,
+                parallel=parallel,
+                n_workers=n_workers,
+            )
+
+            self.import_outputs(self.filename.with_suffix(".outputs.txt"))
+
+            ci = self.estimate_confidence_interval(
+                attribute=target_attribute,
+                confidence_level=target_confidence,
+            )
+
+            width = float(ci.high - ci.low)
+            confidence_interval_history.append(width)
+
+            # A NaN width means the target attribute contains NaN values; the
+            # tolerance check would never pass, so the loop would run to
+            # max_simulations and silently return a NaN history. Stop and warn.
+            if np.isnan(width):
+                warnings.warn(
+                    f"The confidence interval width for '{target_attribute}' is "
+                    "NaN, likely because the attribute contains NaN values. "
+                    "Stopping convergence early; check the simulation outputs.",
+                    stacklevel=2,
+                )
+                break
+
+            if width <= tolerance:
+                break
+
+        return confidence_interval_history
+
     def __evaluate_flight_inputs(self, sim_idx):
         """Evaluates the inputs of a single flight simulation.
 
@@ -666,7 +937,7 @@ class MonteCarlo:
         self.output_file = self._output_file
         self.error_file = self._error_file
 
-        _SimMonitor.reprint(f"Results saved to {self._output_file}")
+        print(f"Results saved to {self._output_file}")
 
     def __check_export_list(self, export_list):
         """
@@ -872,58 +1143,232 @@ class MonteCarlo:
         self._error_file = value
         self.set_errors_log()
 
+    # File format helpers
+
+    @staticmethod
+    def _detect_file_format(filepath):
+        """Detect file format from the file extension.
+
+        Parameters
+        ----------
+        filepath : str or Path
+            Path to the file.
+
+        Returns
+        -------
+        str
+            One of ``"jsonl"``, ``"csv"``, or ``"json"``.
+
+        Raises
+        ------
+        ValueError
+            If the file extension is not supported.
+        """
+        suffix = Path(filepath).suffix.lower()
+        format_map = {".txt": "jsonl", ".csv": "csv", ".json": "json"}
+        if suffix not in format_map:
+            raise ValueError(
+                f"Unsupported file extension '{suffix}'. "
+                "Expected '.txt', '.csv', or '.json'."
+            )
+        return format_map[suffix]
+
+    @staticmethod
+    def _parse_csv_value(value):
+        """Parse a string value from a CSV cell into its appropriate type.
+
+        Parameters
+        ----------
+        value : str
+            The raw string value from the CSV cell.
+
+        Returns
+        -------
+        int, float, dict, list, or str
+            The parsed value in its appropriate Python type.
+        """
+        if value == "":
+            return value
+        # Try parsing JSON objects/arrays
+        if value.startswith(("{", "[")):
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        # Try numeric types
+        try:
+            int_val = int(value)
+            # Ensure the string was truly an integer (not "1.0")
+            if str(int_val) == value:
+                return int_val
+        except ValueError:
+            pass
+        try:
+            return float(value)
+        except ValueError:
+            pass
+        return value
+
+    def _read_log_file(self, filepath):
+        """Read a log file in any supported format and return a list of dicts.
+
+        Parameters
+        ----------
+        filepath : str or Path
+            Path to the log file. Format is detected from the extension.
+
+        Returns
+        -------
+        list of dict
+            A list of dictionaries, one per simulation record.
+        """
+        fmt = self._detect_file_format(filepath)
+        result = []
+        with open(filepath, mode="r", encoding="utf-8") as f:
+            if fmt == "jsonl":
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        result.append(json.loads(line))
+            elif fmt == "json":
+                content = f.read().strip()
+                if content:
+                    result = json.loads(content)
+            elif fmt == "csv":
+                reader = csv.DictReader(f)
+                for row in reader:
+                    result.append({k: self._parse_csv_value(v) for k, v in row.items()})
+        return result
+
+    @staticmethod
+    def _write_log_to_csv(log_data, filepath, flatten=False):
+        """Write a list of dicts to a CSV file.
+
+        Parameters
+        ----------
+        log_data : list of dict
+            The data to write. Each dict is one row.
+        filepath : str or Path
+            Output file path.
+        flatten : bool, optional
+            If True, non-scalar columns (dicts, lists) are omitted.
+            If False (default), non-scalar values are serialized as JSON
+            strings in the CSV cells.
+
+        Raises
+        ------
+        ValueError
+            If ``log_data`` is empty.
+        """
+        if not log_data:
+            raise ValueError(
+                "No data to export. Run a simulation first or import existing data."
+            )
+        # Collect all keys preserving insertion order
+        all_keys = list(dict.fromkeys(k for row in log_data for k in row))
+
+        if flatten:
+            # Identify scalar-only keys
+            scalar_keys = []
+            for key in all_keys:
+                if all(not isinstance(row.get(key), (dict, list)) for row in log_data):
+                    scalar_keys.append(key)
+            fieldnames = scalar_keys
+        else:
+            fieldnames = all_keys
+
+        with open(filepath, mode="w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            for row in log_data:
+                csv_row = {}
+                for key in fieldnames:
+                    value = row.get(key, "")
+                    if isinstance(value, (dict, list)):
+                        csv_row[key] = json.dumps(value)
+                    else:
+                        csv_row[key] = value
+                writer.writerow(csv_row)
+
+    def _write_log_to_json(self, log_data, filepath):
+        """Write a list of dicts to a JSON file as a proper JSON array.
+
+        Parameters
+        ----------
+        log_data : list of dict
+            The data to write. Each dict becomes one element of the array.
+        filepath : str or Path
+            Output file path.
+
+        Raises
+        ------
+        ValueError
+            If ``log_data`` is empty.
+        """
+        if not log_data:
+            raise ValueError(
+                "No data to export. Run a simulation first or import existing data."
+            )
+        with open(filepath, mode="w", encoding="utf-8") as f:
+            json.dump(log_data, f, cls=RocketPyEncoder, indent=2)
+
     # Setters for post simulation attributes
 
     def set_inputs_log(self):
         """
         Sets inputs_log from a file into an attribute for easy access.
+        Supports .txt (JSONL), .csv, and .json file formats.
 
         Returns
         -------
         None
         """
-        self.inputs_log = []
-        with open(self.input_file, mode="r", encoding="utf-8") as rows:
-            for line in rows:
-                self.inputs_log.append(json.loads(line))
+        self.inputs_log = self._read_log_file(self.input_file)
 
     def set_outputs_log(self):
         """
         Sets outputs_log from a file into an attribute for easy access.
+        Supports .txt (JSONL), .csv, and .json file formats.
 
         Returns
         -------
         None
         """
-        self.outputs_log = []
-        with open(self.output_file, mode="r", encoding="utf-8") as rows:
-            for line in rows:
-                self.outputs_log.append(json.loads(line))
+        self.outputs_log = self._read_log_file(self.output_file)
 
     def set_errors_log(self):
         """
         Sets errors_log from a file into an attribute for easy access.
+        Supports .txt (JSONL), .csv, and .json file formats.
 
         Returns
         -------
         None
         """
-        self.errors_log = []
-        with open(self.error_file, mode="r", encoding="utf-8") as errors:
-            for line in errors:
-                self.errors_log.append(json.loads(line))
+        self.errors_log = self._read_log_file(self.error_file)
 
     def set_num_of_loaded_sims(self):
         """
         Determines the number of simulations loaded from output_file being
-        currently used.
+        currently used. Supports .txt (JSONL), .csv, and .json formats.
 
         Returns
         -------
         None
         """
+        fmt = self._detect_file_format(self.output_file)
         with open(self.output_file, mode="r", encoding="utf-8") as outputs:
-            self.num_of_loaded_sims = sum(1 for _ in outputs)
+            if fmt == "jsonl":
+                self.num_of_loaded_sims = sum(1 for _ in outputs)
+            elif fmt == "csv":
+                # Subtract 1 for the header row
+                self.num_of_loaded_sims = max(0, sum(1 for _ in outputs) - 1)
+            elif fmt == "json":
+                content = outputs.read().strip()
+                if content:
+                    self.num_of_loaded_sims = len(json.loads(content))
+                else:
+                    self.num_of_loaded_sims = 0
 
     def set_results(self):
         """
@@ -980,13 +1425,15 @@ class MonteCarlo:
 
     def import_outputs(self, filename=None):
         """
-        Import Monte Carlo results from .txt file and save it into a dictionary.
+        Import Monte Carlo results from a file and save it into a dictionary.
+        Supports .txt (JSONL), .csv, and .json file formats.
 
         Parameters
         ----------
         filename : str, optional
             Name or directory path to the file to be imported. If none,
-            self.filename will be used.
+            self.filename will be used with the default .outputs.txt suffix.
+            Files with .csv or .json extensions are also accepted.
 
         Returns
         -------
@@ -994,7 +1441,7 @@ class MonteCarlo:
 
         Notes
         -----
-        Notice that you can import the outputs, inputs, and errors from the a
+        Notice that you can import the outputs, inputs, and errors from a
         file without the need to run simulations. You can use previously saved
         files to process analyze the results or to continue a simulation.
         """
@@ -1007,20 +1454,22 @@ class MonteCarlo:
             with open(filepath, "w+", encoding="utf-8"):
                 self.output_file = filepath
 
-        _SimMonitor.reprint(
-            f"A total of {self.num_of_loaded_sims} simulations results were "
-            f"loaded from the following output file: {self.output_file}\n"
+        print(
+            f"A total of {self.num_of_loaded_sims} simulation results were "
+            f"loaded from: {self.output_file}"
         )
 
     def import_inputs(self, filename=None):
         """
-        Import Monte Carlo inputs from .txt file and save it into a dictionary.
+        Import Monte Carlo inputs from a file and save it into a dictionary.
+        Supports .txt (JSONL), .csv, and .json file formats.
 
         Parameters
         ----------
         filename : str, optional
             Name or directory path to the file to be imported. If none,
-            self.filename will be used.
+            self.filename will be used with the default .inputs.txt suffix.
+            Files with .csv or .json extensions are also accepted.
 
         Returns
         -------
@@ -1035,17 +1484,19 @@ class MonteCarlo:
             with open(filepath, "w+", encoding="utf-8"):
                 self.input_file = filepath
 
-        _SimMonitor.reprint(f"The following input file was imported: {self.input_file}")
+        print(f"The following input file was imported: {self.input_file}")
 
     def import_errors(self, filename=None):
         """
-        Import Monte Carlo errors from .txt file and save it into a dictionary.
+        Import Monte Carlo errors from a file and save it into a dictionary.
+        Supports .txt (JSONL), .csv, and .json file formats.
 
         Parameters
         ----------
         filename : str, optional
             Name or directory path to the file to be imported. If none,
-            self.filename will be used.
+            self.filename will be used with the default .errors.txt suffix.
+            Files with .csv or .json extensions are also accepted.
 
         Returns
         -------
@@ -1060,11 +1511,11 @@ class MonteCarlo:
             with open(filepath, "w+", encoding="utf-8"):
                 self.error_file = filepath
 
-        _SimMonitor.reprint(f"The following error file was imported: {self.error_file}")
+        print(f"The following error file was imported: {self.error_file}")
 
     def import_results(self, filename=None):
         """
-        Import Monte Carlo results from .txt file and save it into a dictionary.
+        Import Monte Carlo results from a file and save it into a dictionary.
 
         Parameters
         ----------
@@ -1153,7 +1604,7 @@ class MonteCarlo:
             except KeyError as e:
                 raise KeyError("No impact data found. Skipping impact ellipses.") from e
 
-        (apogee_ellipses, impact_ellipses) = generate_monte_carlo_ellipses(
+        apogee_ellipses, impact_ellipses = generate_monte_carlo_ellipses(
             impact_x,
             impact_y,
             apogee_x,
@@ -1279,6 +1730,283 @@ class MonteCarlo:
         """
         self.plots.ellipses_comparison(other_monte_carlo, **kwargs)
 
+    # CSV and JSON export methods
+
+    def export_outputs_to_csv(self, filename):
+        """Export simulation outputs to a CSV file.
+
+        Each row represents one simulation. All output values are scalar,
+        so the CSV is directly usable in spreadsheet applications.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the output CSV file.
+
+        Raises
+        ------
+        ValueError
+            If no output data is available to export.
+        """
+        self._write_log_to_csv(self.outputs_log, filename)
+
+    def export_outputs_to_json(self, filename):
+        """Export simulation outputs to a JSON file as an array of objects.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the output JSON file.
+
+        Raises
+        ------
+        ValueError
+            If no output data is available to export.
+        """
+        self._write_log_to_json(self.outputs_log, filename)
+
+    def export_inputs_to_csv(self, filename, flatten=False):
+        """Export simulation inputs to a CSV file.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the output CSV file.
+        flatten : bool, optional
+            If True, columns with non-scalar values (dicts, lists) are
+            omitted from the CSV. If False (default), non-scalar values
+            are serialized as JSON strings within the CSV cells.
+
+        Raises
+        ------
+        ValueError
+            If no input data is available to export.
+        """
+        self._write_log_to_csv(self.inputs_log, filename, flatten=flatten)
+
+    def export_inputs_to_json(self, filename):
+        """Export simulation inputs to a JSON file as an array of objects.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the output JSON file.
+
+        Raises
+        ------
+        ValueError
+            If no input data is available to export.
+        """
+        self._write_log_to_json(self.inputs_log, filename)
+
+    def export_errors_to_csv(self, filename, flatten=False):
+        """Export simulation errors to a CSV file.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the output CSV file.
+        flatten : bool, optional
+            If True, columns with non-scalar values (dicts, lists) are
+            omitted from the CSV. If False (default), non-scalar values
+            are serialized as JSON strings within the CSV cells.
+
+        Raises
+        ------
+        ValueError
+            If no error data is available to export.
+        """
+        self._write_log_to_csv(self.errors_log, filename, flatten=flatten)
+
+    def export_errors_to_json(self, filename):
+        """Export simulation errors to a JSON file as an array of objects.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the output JSON file.
+
+        Raises
+        ------
+        ValueError
+            If no error data is available to export.
+        """
+        self._write_log_to_json(self.errors_log, filename)
+
+
+def _recorded_indices(label, path):
+    """``{index: how many rows carry it}`` for one log file.
+
+    Strict about what a row is. A row that will not parse, is not an
+    object, or carries anything but a non-negative plain ``int`` index is
+    the corruption this check exists to find, so it is named and raised on
+    rather than skipped. ``type(...) is int`` and not ``isinstance``:
+    ``True`` and ``1.0`` both compare equal to ``1`` and would otherwise
+    pass for it.
+    """
+    written = {}
+    with open(path, mode="r", encoding="utf-8") as rows:
+        for number, line in enumerate(rows, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError as error:
+                raise RuntimeError(
+                    f"{label} row {number} is not readable JSON, so a "
+                    f"worker was cut off part way through writing it: "
+                    f"{line[:60]!r}"
+                ) from error
+            index = record.get("index") if isinstance(record, dict) else None
+            # isinstance is the wrong tool here, see the docstring: bool is a
+            # subclass of int, so True would pass for the index 1.
+            # pylint: disable-next=unidiomatic-typecheck
+            if type(index) is not int or index < 0:  # noqa: E721
+                raise RuntimeError(
+                    f"{label} row {number} does not carry a simulation "
+                    f"index: {line[:60]!r}"
+                )
+            written[index] = written.get(index, 0) + 1
+    return written
+
+
+def _validate_simulation_count(number_of_simulations):
+    """A count has to be a whole non-negative number, checked before any file.
+
+    ``type(...) is not int``: ``True`` is an ``int`` to ``isinstance`` and would
+    quietly run one simulation. A float ran ``int(count)`` of them and then
+    failed the completeness check with a range it could never have satisfied.
+    """
+    if type(number_of_simulations) not in (int, np.integer):  # noqa: E721
+        raise TypeError(
+            f"number_of_simulations must be an integer, not "
+            f"{type(number_of_simulations).__name__}."
+        )
+    if number_of_simulations < 0:
+        raise ValueError(
+            f"number_of_simulations must not be negative, got {number_of_simulations}."
+        )
+
+
+_WORKER_SHUTDOWN_GRACE = 5.0
+
+
+def _record_simulation(input_file, output_file, inputs_json, outputs_json):
+    """Append one simulation's inputs and outputs to their logs.
+
+    Module level rather than a method: the run paths are driven directly by
+    stub objects in the tests, and a private method is not reachable on those.
+    """
+    with open(input_file, "a", encoding="utf-8") as f:
+        f.write(inputs_json)
+    with open(output_file, "a", encoding="utf-8") as f:
+        f.write(outputs_json)
+
+
+def _bring_the_fleet_down(started_processes, error_event):
+    """Stop everything, without raising over the failure being handled.
+
+    Setting the event is best effort like the workers' own reporting: the
+    manager may be the thing that died. Then a bounded window to notice it and
+    leave, and whatever is left gets stopped.
+    """
+    try:
+        error_event.set()
+    except Exception:  # pylint: disable=broad-exception-caught
+        pass
+    _wait_for_workers(started_processes, timeout=_WORKER_SHUTDOWN_GRACE)
+    _stop_any_worker_still_running(started_processes)
+
+
+def _wait_for_workers(started_processes, error_event=None, timeout=None):
+    """Wait for the fleet, giving up early once one of them reports an error.
+
+    Joining each worker in turn waits on them in the order they were started. A
+    worker stuck in a native call held the parent on the first join while
+    another had already set the event, so neither the error nor the cleanup
+    after it was ever reached.
+
+    No overall deadline on the normal path: a run with no error and one worker
+    still going is a long simulation, and that is not for this to cut short.
+    """
+    deadline = None if timeout is None else monotonic() + timeout
+    while any(process.is_alive() for process in started_processes):
+        if error_event is not None and error_event.is_set():
+            break
+        if deadline is not None and monotonic() >= deadline:
+            break
+        for process in started_processes:
+            process.join(timeout=0.1)
+
+    # Reap whatever has already finished. A worker that was gone before the
+    # loop started was never joined by it, and an unjoined child has no exit
+    # code yet, so the crash check downstream would read None and call it one.
+    for process in started_processes:
+        process.join(timeout=0)
+
+
+def _stop_any_worker_still_running(started_processes, grace=_WORKER_SHUTDOWN_GRACE):
+    """Whatever is still going here is not going to stop on its own.
+
+    Signal every worker before waiting on any of them. Terminating one and
+    joining it before reaching the next let a worker that ignores the signal
+    keep the rest of the fleet, the manager and the open files alive behind it.
+    """
+    alive = [process for process in started_processes if process.is_alive()]
+    for process in alive:
+        process.terminate()
+    for process in alive:
+        process.join(timeout=grace)
+
+    # terminate is a request. SIGKILL is not, and a worker that sat through the
+    # first one would otherwise keep the manager and the files open for good.
+    stubborn = [process for process in alive if process.is_alive()]
+    for process in stubborn:
+        process.kill()
+    for process in stubborn:
+        process.join(timeout=grace)
+
+
+def _fail_if_a_worker_did_not_finish(started_processes, error_event, error_file):
+    """Raise unless every worker finished and none of them reported an error.
+
+    A worker can die without ever setting the event: SystemExit, ``os._exit``, a
+    segfault in a native extension, a target that will not unpickle under spawn,
+    or the error handler itself failing. ``join()`` returns None whatever
+    happened, so the exit status is the only thing that separates a crash from a
+    clean finish.
+    """
+    crashed = [
+        f"{sim_producer.name} exited with {sim_producer.exitcode}"
+        for sim_producer in started_processes
+        if sim_producer.exitcode != 0
+    ]
+    if error_event.is_set() or crashed:
+        raise RuntimeError(
+            "An error occurred during the simulation. \n"
+            + (f"Workers that did not exit cleanly: {crashed}. \n" if crashed else "")
+            + f"Check the logs and error file {error_file} for more information."
+        )
+
+
+def _claim_next_index(sim_monitor, mutex):
+    """Atomically claim the next 0-based simulation index, or ``None`` if done.
+
+    ``keep_simulating()`` and ``increment()`` are two separate manager calls, so
+    the shared ``mutex`` has to be held across both. Without it, two workers can
+    each pass the ``count < number_of_simulations`` check at the tail before
+    either increments, and both then claim an index, running more simulations
+    than were requested (and duplicating a simulation index).
+    """
+    mutex.acquire()
+    try:
+        if not sim_monitor.keep_simulating():
+            return None
+        return sim_monitor.increment() - 1
+    finally:
+        mutex.release()
+
 
 def _import_multiprocess():
     """Import the necessary modules and submodules for the
@@ -1373,15 +2101,12 @@ class _SimMonitor:
         msg = f"Completed {self.count - self.initial_count} iterations."
         msg += f" In total, {self.count} simulations are exported.\n"
         msg += f"Total wall time: {time() - self.start_time:.1f} s"
-
         _SimMonitor.reprint(msg, end="\n", flush=True)
 
     @staticmethod
     def reprint(msg, end="\n", flush=True):
-        """
-        Prints a message on the same line as the previous one and replaces the
-        previous message with the new one, deleting the extra characters from
-        the previous message.
+        """Prints a message replacing the previous line to avoid cluttering
+        the terminal output during concurrent simulation progress updates.
 
         Parameters
         ----------
@@ -1396,12 +2121,8 @@ class _SimMonitor:
         -------
         None
         """
-
         padding = ""
-
         if len(msg) < _SimMonitor._last_print_len:
             padding = " " * (_SimMonitor._last_print_len - len(msg))
-
         print(msg + padding, end=end, flush=flush)
-
         _SimMonitor._last_print_len = len(msg)

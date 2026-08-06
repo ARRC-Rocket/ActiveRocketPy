@@ -3,8 +3,6 @@ Defines the `StochasticModel` class, which is used as a base class for all other
 Stochastic classes.
 """
 
-from random import choice
-
 import numpy as np
 
 from rocketpy.mathutils.function import Function
@@ -68,7 +66,29 @@ class StochasticModel:
         self.obj = obj
         self.last_rnd_dict = {}
         self.__stochastic_dict = kwargs
+        self.__nominal_values = {}
         self._set_stochastic(seed)
+
+    def _nominal(self, input_name, getter=getattr):
+        """``self.obj``'s value for ``input_name``, as it was when this model
+        was built.
+
+        Read once and remembered, because ``StochasticEnvironment`` has
+        ``create_object`` write the randomised value back onto ``self.obj``
+        instead of building a copy. Re-reading it on a reseed would take one
+        simulation's output as the next one's nominal, and a factor would
+        multiply the factor before it rather than the original value.
+
+        A custom ``getter`` reads a component's own attribute rather than one
+        of ``self.obj``'s, and nothing writes back to those, so it is passed
+        straight through. Caching it here would be wrong as well: every
+        component's position arrives under the one name ``"position"``.
+        """
+        if getter is not getattr:
+            return getter(self.obj, input_name)
+        if input_name not in self.__nominal_values:
+            self.__nominal_values[input_name] = getattr(self.obj, input_name)
+        return self.__nominal_values[input_name]
 
     def _set_stochastic(self, seed=None):
         """Set the stochastic attributes from the input dictionary.
@@ -109,7 +129,7 @@ class StochasticModel:
                                 "or a custom sampler"
                             )
                 else:
-                    attr_value = [getattr(self.obj, input_name)]
+                    attr_value = [self._nominal(input_name)]
                 setattr(self, input_name, attr_value)
 
     def __repr__(self):
@@ -186,7 +206,7 @@ class StochasticModel:
             # function. In this case, the nominal value will be taken from the
             # object passed.
             dist_func = get_distribution(input_value[1], self.__random_number_generator)
-            return (getattr(self.obj, input_name), input_value[0], dist_func)
+            return (self._nominal(input_name, getattr), input_value[0], dist_func)
         else:
             # if second item is an int or float, then it is assumed that the
             # first item is the nominal value and the second item is the
@@ -257,7 +277,7 @@ class StochasticModel:
             If the input is not in a valid format.
         """
         if not input_value:
-            return [getattr(self.obj, input_name)]
+            return [self._nominal(input_name, getattr)]
         else:
             return input_value
 
@@ -283,7 +303,7 @@ class StochasticModel:
                 distribution function).
         """
         return (
-            getattr(self.obj, input_name),
+            self._nominal(input_name, getattr),
             input_value,
             get_distribution("normal", self.__random_number_generator),
         )
@@ -310,7 +330,7 @@ class StochasticModel:
             If the input is not in a valid format.
         """
         attribute_name = input_name.replace("_factor", "")
-        setattr(self, f"_{attribute_name}", getattr(self.obj, attribute_name))
+        setattr(self, f"_{attribute_name}", self._nominal(attribute_name))
 
         if isinstance(input_value, tuple):
             return self._validate_tuple_factor(input_name, input_value)
@@ -508,6 +528,21 @@ class StochasticModel:
                         "the first item"
                     )
 
+    def _random_choice(self, values):
+        """Choose one value from a list using this model's seeded generator.
+
+        The index is drawn from the seeded generator, not the stdlib global
+        ``random.choice`` (an unseeded shared instance), so the choice is
+        governed by ``random_seed``. Indexing rather than ``numpy.random.choice``
+        keeps a heterogeneous list -- ``Function`` objects, paths, arrays --
+        returned as itself instead of coerced to a common dtype. An empty
+        ``values`` is returned unchanged.
+        """
+        if not values:
+            return values
+        index = int(self.__random_number_generator.integers(len(values)))
+        return values[index]
+
     def dict_generator(self):
         """
         Generate a dictionary with randomly generated input arguments.
@@ -532,7 +567,7 @@ class StochasticModel:
                 dist_sampler = value[-1]
                 generated_dict[arg] = dist_sampler(value[0], value[1])
             elif isinstance(value, list):
-                generated_dict[arg] = choice(value) if value else value
+                generated_dict[arg] = self._random_choice(value)
             elif isinstance(value, CustomSampler):
                 try:
                     generated_dict[arg] = value.sample(n_samples=1)[0]
@@ -550,6 +585,11 @@ class StochasticModel:
         Model object. The report includes the variable name, the nominal value,
         the standard deviation, and the distribution function used to generate
         the random attributes.
+
+        Returns
+        -------
+        str
+            The formatted report. It is also printed for interactive use.
         """
 
         def format_attribute(attr, value):
@@ -630,4 +670,10 @@ class StochasticModel:
                 format_attribute(attr, attributes[attr]) for attr in custom_attributes
             )
 
-        print("\n".join(filter(None, report)))
+        # This is an explicit, user-invoked display method, so it prints
+        # unconditionally (like ``info``/``all_info`` elsewhere) rather than
+        # logging at INFO level, which is silenced by default. The report is
+        # also returned so it can be used programmatically.
+        report_str = "\n".join(filter(None, report))
+        print(report_str)
+        return report_str

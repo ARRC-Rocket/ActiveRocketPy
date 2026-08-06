@@ -11,6 +11,7 @@ import functools
 import importlib
 import importlib.metadata
 import json
+import logging
 import math
 import re
 import time
@@ -24,6 +25,8 @@ import pytz
 from cftime import num2pydate
 from matplotlib.patches import Ellipse
 from packaging import version as packaging_version
+
+logger = logging.getLogger(__name__)
 
 # Mapping of module name and the name of the package that should be installed
 INSTALL_MAPPING = {"IPython": "ipython"}
@@ -422,18 +425,18 @@ def inverted_haversine(lat0, lon0, distance, bearing, earth_radius=6.3781e6):
     lon0_rad = np.deg2rad(lon0)
 
     # Apply inverted Haversine formula
-    lat1_rad = math.asin(
-        math.sin(lat0_rad) * math.cos(distance / earth_radius)
-        + math.cos(lat0_rad)
-        * math.sin(distance / earth_radius)
-        * math.cos(math.radians(bearing))
+    lat1_rad = np.arcsin(
+        np.sin(lat0_rad) * np.cos(distance / earth_radius)
+        + np.cos(lat0_rad)
+        * np.sin(distance / earth_radius)
+        * np.cos(np.radians(bearing))
     )
 
-    lon1_rad = lon0_rad + math.atan2(
-        math.sin(math.radians(bearing))
-        * math.sin(distance / earth_radius)
-        * math.cos(lat0_rad),
-        math.cos(distance / earth_radius) - math.sin(lat0_rad) * math.sin(lat1_rad),
+    lon1_rad = lon0_rad + np.arctan2(
+        np.sin(np.radians(bearing))
+        * np.sin(distance / earth_radius)
+        * np.cos(lat0_rad),
+        np.cos(distance / earth_radius) - np.sin(lat0_rad) * np.sin(lat1_rad),
     )
 
     # Convert back to degrees and then return
@@ -1464,11 +1467,34 @@ def find_obj_from_hash(obj, hash_, depth_limit=None):
     return None
 
 
+def _seed_sequence_to_int(seed_sequence):
+    """Collapse a ``SeedSequence`` into a 128-bit Python ``int``.
+
+    A plain ``int`` is what ``numpy.random.default_rng`` and the stdlib
+    ``random.Random`` both accept (``random.Random`` rejects a ``SeedSequence``
+    with a ``TypeError`` since Python 3.11), so a custom sampler whose
+    ``reset_seed`` documents an ``int`` and builds a modern generator keeps
+    working. The legacy ``numpy.random.RandomState`` is the exception: it caps a
+    single-integer seed at ``2**32 - 1``, so a sampler still built on it would
+    have to reduce the value (``RandomState`` is a frozen legacy API NumPy steers
+    new code away from). All four ``uint32`` words are combined to keep the full
+    128-bit pool, so sub-streams stay decorrelated instead of collapsing to a
+    single 32-bit word.
+
+    The words are combined by value (little-endian word order), not via
+    ``tobytes()``, so the seed is the same on big- and little-endian machines --
+    a byte-order-dependent seed would break the cross-platform reproducibility
+    this exists to provide.
+    """
+    words = seed_sequence.generate_state(4, dtype=np.uint32)
+    return sum(int(word) << (32 * position) for position, word in enumerate(words))
+
+
 if __name__ == "__main__":  # pragma: no cover
     import doctest
 
     res = doctest.testmod()
     if res.failed < 1:
-        print(f"All the {res.attempted} tests passed!")
+        logger.info("All the %d tests passed!", res.attempted)
     else:
-        print(f"{res.failed} out of {res.attempted} tests failed.")
+        logger.error("%d out of %d tests failed.", res.failed, res.attempted)
