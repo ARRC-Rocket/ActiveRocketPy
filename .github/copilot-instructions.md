@@ -160,12 +160,7 @@ docs/
 
 ### Function Definition
 ```python
-def calculate_drag_force(
-    velocity,
-    air_density,
-    drag_coefficient,
-    reference_area
-):
+def calculate_drag_force(velocity, air_density, drag_coefficient, reference_area):
     """Calculate drag force using the standard drag equation.
 
     Parameters
@@ -211,7 +206,9 @@ def test_calculate_drag_force_returns_correct_value():
     expected_force = 30.625  # N
 
     # Act
-    result = calculate_drag_force(velocity, air_density, drag_coefficient, reference_area)
+    result = calculate_drag_force(
+        velocity, air_density, drag_coefficient, reference_area
+    )
 
     # Assert
     assert abs(result - expected_force) < 1e-6
