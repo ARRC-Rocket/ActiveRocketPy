@@ -8,6 +8,7 @@ import pytest
 from scipy import optimize
 
 from rocketpy import Components, Flight, Function, Rocket
+from rocketpy.mathutils.vector_matrix import Vector
 
 plt.rcParams.update({"figure.max_open_warning": 0})
 
@@ -81,6 +82,87 @@ def setup_rocket_with_given_static_margin(rocket, static_margin):
 
 
 # Tests
+
+
+def test_calculate_thrust_vector_zero_gimbal():
+    """A centered nozzle must keep all effective thrust on the body e3 axis."""
+    # Arrange
+    effective_thrust = 100.0
+
+    # Act
+    thrust_vector = Flight._calculate_thrust_vector(effective_thrust)
+
+    # Assert
+    assert tuple(thrust_vector) == pytest.approx((0.0, 0.0, effective_thrust))
+
+
+@pytest.mark.parametrize(
+    "gimbal_angle_x, gimbal_angle_y, expected_direction",
+    [
+        (15.0, 0.0, (0.0, -1.0, 1.0)),
+        (0.0, 15.0, (1.0, 0.0, 1.0)),
+        (-15.0, 0.0, (0.0, 1.0, 1.0)),
+        (0.0, -15.0, (-1.0, 0.0, 1.0)),
+    ],
+)
+def test_calculate_thrust_vector_single_axis_gimbal(
+    gimbal_angle_x, gimbal_angle_y, expected_direction
+):
+    """A single-axis gimbal must create the expected signed lateral force."""
+    # Arrange
+    effective_thrust = 100.0
+    lateral = effective_thrust * np.sin(np.deg2rad(15.0))
+    axial = effective_thrust * np.cos(np.deg2rad(15.0))
+    scale = (lateral, lateral, axial)
+    expected = tuple(
+        direction * component
+        for direction, component in zip(expected_direction, scale)
+    )
+
+    # Act
+    thrust_vector = Flight._calculate_thrust_vector(
+        effective_thrust, gimbal_angle_x, gimbal_angle_y
+    )
+
+    # Assert
+    assert tuple(thrust_vector) == pytest.approx(expected)
+    assert abs(thrust_vector) == pytest.approx(effective_thrust)
+
+
+def test_calculate_thrust_vector_two_axis_gimbal_preserves_magnitude():
+    """Two-axis gimbaling must redirect, not create or destroy, thrust."""
+    # Arrange
+    effective_thrust = 100.0
+
+    # Act
+    thrust_vector = Flight._calculate_thrust_vector(
+        effective_thrust, gimbal_angle_x=6.0, gimbal_angle_y=8.0
+    )
+
+    # Assert
+    assert thrust_vector.x > 0.0
+    assert thrust_vector.y < 0.0
+    assert abs(thrust_vector) == pytest.approx(effective_thrust)
+
+
+def test_gimbaled_thrust_moment_matches_force_at_nozzle():
+    """The TVC moment must be the nozzle lever arm crossed with thrust."""
+    # Arrange
+    effective_thrust = 100.0
+    nozzle_to_cdm = 2.0
+    thrust_vector = Flight._calculate_thrust_vector(
+        effective_thrust, gimbal_angle_x=15.0
+    )
+    thrust_position = Vector([0.0, 0.0, nozzle_to_cdm])
+
+    # Act
+    thrust_moment = thrust_position ^ thrust_vector
+
+    # Assert
+    expected_moment_x = (
+        nozzle_to_cdm * effective_thrust * np.sin(np.deg2rad(15.0))
+    )
+    assert tuple(thrust_moment) == pytest.approx((expected_moment_x, 0.0, 0.0))
 
 
 def test_get_solution_at_time(flight_calisto):

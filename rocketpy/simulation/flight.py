@@ -1820,6 +1820,31 @@ class Flight:
         # Hey! We will finish this function later, now we just can use u_dot
         return self.u_dot_generalized(t, u, post_processing=post_processing)
 
+    @staticmethod
+    def _calculate_thrust_vector(
+        effective_thrust, gimbal_angle_x=0.0, gimbal_angle_y=0.0
+    ):
+        """Calculate the motor thrust vector in the rocket body frame.
+
+        Positive ``gimbal_angle_x`` rotates the nominal +e3 thrust toward
+        -e2, while positive ``gimbal_angle_y`` rotates it toward +e1. Angles
+        are expressed in degrees and thrust components in newtons.
+
+        The axial component follows the two-axis decomposition already used
+        by the TVC moment model, so adding the lateral components preserves
+        the effective thrust magnitude.
+        """
+        angle_x = np.deg2rad(gimbal_angle_x)
+        angle_y = np.deg2rad(gimbal_angle_y)
+        thrust1 = effective_thrust * np.sin(angle_y)
+        thrust2 = -effective_thrust * np.sin(angle_x)
+        axial_thrust_squared = max(
+            effective_thrust**2 - thrust1**2 - thrust2**2,
+            0.0,
+        )
+        thrust3 = np.sqrt(axial_thrust_squared)
+        return Vector([thrust1, thrust2, thrust3])
+
     def u_dot(self, t, u, post_processing=False):  # pylint: disable=too-many-locals,too-many-statements
         """Calculates derivative of u state vector with respect to time
         when rocket is flying in 6 DOF motion during ascent out of rail
@@ -1879,40 +1904,26 @@ class Flight:
             )
 
             # Thrust Vector Control (TVC)
-            if hasattr(self.rocket, "thrust_vector_control"):
-                # TVC Fz thrust: F = T * sqrt(1 - sin(gimbal_angle_x)**2 - sin(gimbal_angle_y)**2)
-                thrust3 = effective_thrust * np.sqrt(
-                    1
-                    - np.sin(
-                        self.rocket.thrust_vector_control.gimbal_angle_x * (np.pi / 180)
-                    )
-                    ** 2
-                    - np.sin(
-                        self.rocket.thrust_vector_control.gimbal_angle_y * (np.pi / 180)
-                    )
-                    ** 2
-                )
-                tvc_lever = self.rocket.nozzle_to_cdm
-                # TVC Mx My moments: M = T * sin(x) * r
-                M1 += (
-                    np.sin(
-                        self.rocket.thrust_vector_control.gimbal_angle_x * (np.pi / 180)
-                    )
-                    * effective_thrust
-                    * tvc_lever
-                )
-                M2 += (
-                    np.sin(
-                        self.rocket.thrust_vector_control.gimbal_angle_y * (np.pi / 180)
-                    )
-                    * effective_thrust
-                    * tvc_lever
-                )
-            else:
-                thrust3 = effective_thrust
-            # Off center moment
-            M1 += self.rocket.thrust_eccentricity_y * thrust3
-            M2 -= self.rocket.thrust_eccentricity_x * thrust3
+            tvc = getattr(self.rocket, "thrust_vector_control", None)
+            thrust_vector = self._calculate_thrust_vector(
+                effective_thrust,
+                getattr(tvc, "gimbal_angle_x", 0.0),
+                getattr(tvc, "gimbal_angle_y", 0.0),
+            )
+            thrust1, thrust2, thrust3 = thrust_vector
+
+            # Moment from applying the complete thrust vector at the nozzle.
+            thrust_position = Vector(
+                [
+                    self.rocket.thrust_eccentricity_x,
+                    self.rocket.thrust_eccentricity_y,
+                    self.rocket.nozzle_to_cdm,
+                ]
+            )
+            thrust_moment = thrust_position ^ thrust_vector
+            M1 += thrust_moment.x
+            M2 += thrust_moment.y
+            M3 += thrust_moment.z
 
         else:
             # Motor stopped
@@ -1926,7 +1937,7 @@ class Flight:
             # Mass
             mass_flow_rate_at_t, propellant_mass_at_t = 0, 0
             # thrust
-            thrust3 = 0
+            thrust1, thrust2, thrust3 = 0, 0, 0
             net_thrust = 0
 
         # Retrieve important quantities
@@ -2149,12 +2160,14 @@ class Flight:
         L = [
             (
                 R1
+                + thrust1
                 - b * propellant_mass_at_t * (omega2**2 + omega3**2)
                 - 2 * c * mass_flow_rate_at_t * omega2
             )
             / total_mass_at_t,
             (
                 R2
+                + thrust2
                 + b * propellant_mass_at_t * (alpha3 + omega1 * omega2)
                 + 2 * c * mass_flow_rate_at_t * omega1
             )
@@ -2606,43 +2619,30 @@ class Flight:
         )
 
         # Thrust Vector Control (TVC)
-        if hasattr(self.rocket, "thrust_vector_control"):
-            tvc_lever = self.rocket.nozzle_to_cdm
-            # TVC Mx My moments: M = T * sin(x) * r
-            M1 += (
-                np.sin(self.rocket.thrust_vector_control.gimbal_angle_x * (np.pi / 180))
-                * effective_thrust
-                * tvc_lever
-            )
-            M2 += (
-                np.sin(self.rocket.thrust_vector_control.gimbal_angle_y * (np.pi / 180))
-                * effective_thrust
-                * tvc_lever
-            )
-            # TVC Fz thrust: F = T * sqrt(1 - sin^2(x) - sin^2(y))
-            thrust3 = effective_thrust * np.sqrt(
-                1
-                - np.sin(
-                    self.rocket.thrust_vector_control.gimbal_angle_x * (np.pi / 180)
-                )
-                ** 2
-                - np.sin(
-                    self.rocket.thrust_vector_control.gimbal_angle_y * (np.pi / 180)
-                )
-                ** 2
-            )
-        else:
-            thrust3 = effective_thrust
+        tvc = getattr(self.rocket, "thrust_vector_control", None)
+        thrust_vector = self._calculate_thrust_vector(
+            effective_thrust,
+            getattr(tvc, "gimbal_angle_x", 0.0),
+            getattr(tvc, "gimbal_angle_y", 0.0),
+        )
+        thrust3 = thrust_vector.z
+
+        # Moment from applying the complete thrust vector at the nozzle.
+        thrust_position = Vector(
+            [
+                self.rocket.thrust_eccentricity_x,
+                self.rocket.thrust_eccentricity_y,
+                self.rocket.nozzle_to_cdm,
+            ]
+        )
+        thrust_moment = thrust_position ^ thrust_vector
+        M1 += thrust_moment.x
+        M2 += thrust_moment.y
+        M3 += thrust_moment.z
 
         # Off center moment
-        M1 += (
-            self.rocket.cp_eccentricity_y * R3
-            + self.rocket.thrust_eccentricity_y * thrust3
-        )
-        M2 -= (
-            self.rocket.cp_eccentricity_x * R3
-            + self.rocket.thrust_eccentricity_x * thrust3
-        )
+        M1 += self.rocket.cp_eccentricity_y * R3
+        M2 -= self.rocket.cp_eccentricity_x * R3
         M3 += self.rocket.cp_eccentricity_x * R2 - self.rocket.cp_eccentricity_y * R1
 
         # Roll control moment
@@ -2656,7 +2656,7 @@ class Flight:
         T00 = total_mass * r_CM
         T03 = 2 * total_mass_dot * (r_NOZ - r_CM) - 2 * total_mass * r_CM_dot
         T04 = (
-            Vector([0, 0, thrust3])
+            thrust_vector
             - total_mass * r_CM_ddot
             - 2 * total_mass_dot * r_CM_dot
             + total_mass_ddot * (r_NOZ - r_CM)
