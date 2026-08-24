@@ -2168,9 +2168,7 @@ class Flight:
                 M1 += thrust2 * effective_thrust * tvc_lever
                 M2 += -thrust1 * effective_thrust * tvc_lever
             else:
-                thrust1 = 0
-                thrust2 = 0
-                thrust3 = effective_thrust
+                thrust1, thrust2, thrust3 = 0, 0, effective_thrust
             # Off center moment
             M1 += self.rocket.thrust_eccentricity_y * thrust3
             M2 -= self.rocket.thrust_eccentricity_x * thrust3
@@ -2191,7 +2189,7 @@ class Flight:
             # Mass
             mass_flow_rate_at_t, propellant_mass_at_t = 0, 0
             # thrust
-            thrust3 = 0
+            thrust1, thrust2, thrust3 = 0, 0, 0
             net_thrust = 0
 
         # Retrieve important quantities
@@ -2892,9 +2890,8 @@ class Flight:
             M1 += thrust2 * effective_thrust * tvc_lever
             M2 += -thrust1 * effective_thrust * tvc_lever
         else:
-            thrust1 = 0
-            thrust2 = 0
-            thrust3 = effective_thrust
+            thrust1, thrust2, thrust3 = 0, 0, effective_thrust
+
         # Off center moment
         M1 += (
             self.rocket.cp_eccentricity_y * R3
