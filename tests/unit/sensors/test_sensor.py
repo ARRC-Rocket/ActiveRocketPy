@@ -272,7 +272,7 @@ def test_noisy_rotated_accelerometer(noisy_rotated_accelerometer, example_plain_
 
     # calculate acceleration at sensor position in inertial frame
     relative_position = Vector([0.4, 0.4, 1])
-    inertial_acceleration = Vector(U_DOT[3:6]) + Vector([0, 0, -GRAVITY])
+    inertial_acceleration = Vector(U_DOT[3:6]) - Vector([0, 0, -GRAVITY])
     omega = Vector(U[10:13])
     omega_dot = Vector(U_DOT[10:13])
     acceleration = (
