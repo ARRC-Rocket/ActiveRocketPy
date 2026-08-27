@@ -106,6 +106,7 @@ In the next sections you will find the simulations of the rockets listed above.
    prometheus_2022_flight_sim.ipynb
    erebus_flight_sim.ipynb
    halcyon_flight_sim.ipynb
+   halcyon_flight_sim_active_control.ipynb
    cavour_flight_sim.ipynb
    genesis_flight_sim.ipynb
    camoes_flight_sim.ipynb

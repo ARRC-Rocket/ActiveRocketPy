@@ -2004,7 +2004,6 @@ class Rocket:
                 rocket. The most recent measurements of the sensors are provided
                 with the ``sensor.measurement`` attribute. The sensors are
                 listed in the same order as they are added to the rocket
-               ``interactive_objects``
 
             This function will be called during the simulation at the specified
             sampling rate. The function should evaluate and change the observed
@@ -2164,7 +2163,6 @@ class Rocket:
                 rocket. The most recent measurements of the sensors are provided
                 with the ``sensor.measurement`` attribute. The sensors are
                 listed in the same order as they are added to the rocket
-               `interactive_objects`
 
             This function will be called during the simulation at the specified
             sampling rate. The function should evaluate and change the observed
@@ -2300,7 +2298,6 @@ class Rocket:
                 rocket. The most recent measurements of the sensors are provided
                 with the ``sensor.measurement`` attribute. The sensors are
                 listed in the same order as they are added to the rocket
-               ``interactive_objects``
 
             This function will be called during the simulation at the specified
             sampling rate. The function should evaluate and change the observed

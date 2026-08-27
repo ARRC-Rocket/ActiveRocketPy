@@ -232,7 +232,7 @@ class Accelerometer(InertialSensor):
         gravity = (
             Vector([0, 0, -gravity]) if self.consider_gravity else Vector([0, 0, 0])
         )
-        inertial_acceleration = Vector(u_dot[3:6]) + gravity
+        inertial_acceleration = Vector(u_dot[3:6]) - gravity
 
         # Vector from rocket cdm to sensor in rocket frame
         r = relative_position
